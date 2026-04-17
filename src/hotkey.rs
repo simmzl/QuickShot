@@ -27,7 +27,10 @@ pub fn register(proxy: EventLoopProxy<UserEvent>) -> Result<HotkeyGuard> {
     let receiver = GlobalHotKeyEvent::receiver();
     thread::spawn(move || loop {
         if let Ok(_event) = receiver.try_recv() {
-            let _ = proxy.send_event(UserEvent::HotkeyFired);
+            if let Err(e) = proxy.send_event(UserEvent::HotkeyFired) {
+                eprintln!("hotkey: event loop closed: {e:?}");
+                break;
+            }
         }
         thread::sleep(Duration::from_millis(25));
     });

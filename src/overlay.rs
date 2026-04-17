@@ -4,8 +4,9 @@ use softbuffer::{Context as SoftContext, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use winit::event_loop::ActiveEventLoop;
-use winit::window::{Fullscreen, Window, WindowAttributes};
+use winit::window::{Window, WindowAttributes};
 
+use crate::capture::MonitorGeom;
 use crate::crop;
 
 pub struct Overlay {
@@ -17,13 +18,54 @@ pub struct Overlay {
 }
 
 impl Overlay {
-    pub fn create(event_loop: &ActiveEventLoop, frame: RgbaImage) -> Result<Self> {
-        let attrs = WindowAttributes::default()
-            .with_title("quickshot overlay")
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_fullscreen(Some(Fullscreen::Borderless(None)));
-        let window = Rc::new(event_loop.create_window(attrs).context("create window")?);
+    pub fn create(
+        event_loop: &ActiveEventLoop,
+        frame: RgbaImage,
+        monitor_geom: &MonitorGeom,
+    ) -> Result<Self> {
+        #[cfg(target_os = "macos")]
+        let window = {
+            // On macOS: create a borderless window, then use raw NSWindow API
+            // to position it on the target monitor with a level above the dock/menu bar.
+            // This avoids both the Space-switching animation (Fullscreen::Borderless)
+            // and the "always fullscreens on the app's own monitor" problem (set_simple_fullscreen).
+            let size = winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(
+                monitor_geom.width as f64,
+                monitor_geom.height as f64,
+            ));
+            let position = winit::dpi::Position::Logical(winit::dpi::LogicalPosition::new(
+                monitor_geom.x as f64,
+                monitor_geom.y as f64,
+            ));
+            let attrs = WindowAttributes::default()
+                .with_title("quickshot overlay")
+                .with_decorations(false)
+                .with_resizable(false)
+                .with_inner_size(size)
+                .with_position(position);
+            let win = event_loop.create_window(attrs).context("create window")?;
+            // Set the NSWindow level high enough to cover dock and menu bar.
+            // kCGScreenSaverWindowLevel = 1000, kCGMainMenuWindowLevel = 24.
+            // We use 1000 to be above everything.
+            set_macos_window_level(&win, 1000);
+            win
+        };
+
+        #[cfg(not(target_os = "macos"))]
+        let window = {
+            let target_monitor = event_loop.available_monitors().find(|m| {
+                let pos = m.position();
+                pos.x == monitor_geom.x && pos.y == monitor_geom.y
+            });
+            let attrs = WindowAttributes::default()
+                .with_title("quickshot overlay")
+                .with_decorations(false)
+                .with_resizable(false)
+                .with_fullscreen(Some(winit::window::Fullscreen::Borderless(target_monitor)));
+            event_loop.create_window(attrs).context("create window")?
+        };
+
+        let window = Rc::new(window);
 
         let context = SoftContext::new(window.clone()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
         let surface = Surface::new(&context, window.clone())
@@ -143,5 +185,35 @@ fn draw_rect_outline(
     for y in y1..=y2.min(h - 1) {
         buf[(y * w + x1) as usize] = color;
         buf[(y * w + x2.min(w - 1)) as usize] = color;
+    }
+}
+
+/// Set the NSWindow level via raw Objective-C message send.
+/// level 1000 = kCGScreenSaverWindowLevel, above dock and menu bar.
+#[cfg(target_os = "macos")]
+fn set_macos_window_level(window: &Window, level: i64) {
+    use winit::raw_window_handle::HasWindowHandle;
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let raw = handle.as_raw();
+    let winit::raw_window_handle::RawWindowHandle::AppKit(appkit) = raw else {
+        return;
+    };
+    // appkit.ns_view is a NonNull<c_void> pointing to the NSView.
+    // We send [[[nsView window] setLevel:level] to set the NSWindow level.
+    extern "C" {
+        fn objc_msgSend(obj: *mut std::ffi::c_void, sel: *mut std::ffi::c_void, ...) -> *mut std::ffi::c_void;
+        fn sel_registerName(name: *const u8) -> *mut std::ffi::c_void;
+    }
+    unsafe {
+        let ns_view = appkit.ns_view.as_ptr();
+        let sel_window = sel_registerName(b"window\0".as_ptr());
+        let ns_window = objc_msgSend(ns_view, sel_window);
+        if ns_window.is_null() {
+            return;
+        }
+        let sel_set_level = sel_registerName(b"setLevel:\0".as_ptr());
+        objc_msgSend(ns_window, sel_set_level, level);
     }
 }

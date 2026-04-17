@@ -1,7 +1,7 @@
 use anyhow::Result;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::WindowId;
 
 use crate::capture;
@@ -31,8 +31,8 @@ impl App {
         if self.overlay.is_some() {
             return Ok(());
         }
-        let frame = capture::capture_primary()?;
-        let overlay = Overlay::create(event_loop, frame)?;
+        let (frame, geom) = capture::capture_at_cursor()?;
+        let overlay = Overlay::create(event_loop, frame, &geom)?;
         overlay.window.request_redraw();
         self.overlay = Some(overlay);
         Ok(())
@@ -43,6 +43,8 @@ impl App {
             return;
         };
         let Some(win_rect) = overlay.current_window_rect() else {
+            // Zero-area selection — just close overlay without copying.
+            Self::close_overlay(overlay);
             return;
         };
         let frame_rect = overlay.window_rect_to_frame_rect(win_rect);
@@ -56,12 +58,22 @@ impl App {
                 cropped.height()
             );
         }
+        Self::close_overlay(overlay);
+    }
+
+    fn close_overlay(overlay: Overlay) {
         drop(overlay);
     }
 }
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, _event_loop: &ActiveEventLoop) {}
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Keep the event loop alive even when no windows exist,
+        // so global hotkey events are still processed.
+        event_loop.set_control_flow(ControlFlow::Wait);
+    }
 
     fn window_event(
         &mut self,
