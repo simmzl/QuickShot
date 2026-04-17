@@ -4,7 +4,7 @@ use anyhow::Result;
 pub fn preflight() -> Result<()> {
     use core_graphics::access::ScreenCaptureAccess;
 
-    let access = ScreenCaptureAccess::default();
+    let access = ScreenCaptureAccess;
     if access.preflight() {
         return Ok(());
     }

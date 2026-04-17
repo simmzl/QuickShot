@@ -39,7 +39,7 @@ impl App {
     }
 
     fn finish_selection(&mut self) {
-        let Some(mut overlay) = self.overlay.take() else {
+        let Some(overlay) = self.overlay.take() else {
             return;
         };
         let Some(win_rect) = overlay.current_window_rect() else {
