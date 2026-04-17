@@ -1,6 +1,6 @@
-pub mod hit;
-pub mod render;
-pub mod state;
+pub(crate) mod hit;
+pub(crate) mod render;
+pub(crate) mod state;
 
 use anyhow::{Context, Result};
 use image::RgbaImage;
@@ -28,6 +28,10 @@ impl Overlay {
         monitor_geom: &MonitorGeom,
     ) -> Result<Self> {
         #[cfg(target_os = "macos")]
+        // On macOS: create a borderless window, then use raw NSWindow API
+        // to position it on the target monitor with a level above the dock/menu bar.
+        // This avoids both the Space-switching animation (Fullscreen::Borderless)
+        // and the "always fullscreens on the app's own monitor" problem (set_simple_fullscreen).
         let window = {
             let size = winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(
                 monitor_geom.width as f64,
@@ -44,6 +48,9 @@ impl Overlay {
                 .with_inner_size(size)
                 .with_position(position);
             let win = event_loop.create_window(attrs).context("create window")?;
+            // Set the NSWindow level high enough to cover dock and menu bar.
+            // kCGScreenSaverWindowLevel = 1000, kCGMainMenuWindowLevel = 24.
+            // We use 1000 to be above everything.
             set_macos_window_level(&win, 1000);
             win
         };
@@ -76,12 +83,14 @@ impl Overlay {
         })
     }
 
+    /// Current window-space rect (x, y, w, h) while dragging, if any.
     pub fn current_window_rect(&self) -> Option<(u32, u32, u32, u32)> {
         let (s, e) = (self.drag_start?, self.drag_end?);
         let size = self.window.inner_size();
         crop::normalize_rect(s, e, (size.width, size.height))
     }
 
+    /// Translate a window-space rect into a frame-space rect.
     pub fn window_rect_to_frame_rect(
         &self,
         rect: (u32, u32, u32, u32),
@@ -122,6 +131,8 @@ impl Overlay {
     }
 }
 
+/// Set the NSWindow level via raw Objective-C message send.
+/// level 1000 = kCGScreenSaverWindowLevel, above dock and menu bar.
 #[cfg(target_os = "macos")]
 fn set_macos_window_level(window: &Window, level: i64) {
     use winit::raw_window_handle::HasWindowHandle;
@@ -140,6 +151,8 @@ fn set_macos_window_level(window: &Window, level: i64) {
         ) -> *mut std::ffi::c_void;
         fn sel_registerName(name: *const u8) -> *mut std::ffi::c_void;
     }
+    // appkit.ns_view is a NonNull<c_void> pointing to the NSView.
+    // We send [[[nsView window] setLevel:level] to set the NSWindow level.
     unsafe {
         let ns_view = appkit.ns_view.as_ptr();
         let sel_window = sel_registerName(b"window\0".as_ptr());
