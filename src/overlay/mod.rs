@@ -7,18 +7,28 @@ use image::RgbaImage;
 use softbuffer::{Context as SoftContext, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowAttributes};
 
 use crate::capture::MonitorGeom;
-use crate::crop;
+use state::{OverlayState, Rect, Transition};
+
+/// What `Overlay::handle_event` reports back to the caller after processing
+/// one winit event. Keeps `app.rs` from needing to inspect `OverlayState`.
+#[derive(Debug, Clone, Copy)]
+pub enum Outcome {
+    Continue,
+    Confirmed(Rect),
+    Cancelled,
+}
 
 pub struct Overlay {
     pub window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     pub frame: RgbaImage,
-    pub drag_start: Option<(i32, i32)>,
-    pub drag_end: Option<(i32, i32)>,
+    pub state: OverlayState,
+    pub cursor: (i32, i32),
 }
 
 impl Overlay {
@@ -28,11 +38,11 @@ impl Overlay {
         monitor_geom: &MonitorGeom,
     ) -> Result<Self> {
         #[cfg(target_os = "macos")]
-        // On macOS: create a borderless window, then use raw NSWindow API
-        // to position it on the target monitor with a level above the dock/menu bar.
-        // This avoids both the Space-switching animation (Fullscreen::Borderless)
-        // and the "always fullscreens on the app's own monitor" problem (set_simple_fullscreen).
         let window = {
+            // On macOS: create a borderless window, then use raw NSWindow API
+            // to position it on the target monitor with a level above the dock/menu bar.
+            // This avoids both the Space-switching animation (Fullscreen::Borderless)
+            // and the "always fullscreens on the app's own monitor" problem (set_simple_fullscreen).
             let size = winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(
                 monitor_geom.width as f64,
                 monitor_geom.height as f64,
@@ -78,27 +88,85 @@ impl Overlay {
             window,
             surface,
             frame,
-            drag_start: None,
-            drag_end: None,
+            state: OverlayState::Idle,
+            cursor: (0, 0),
         })
     }
 
-    /// Current window-space rect (x, y, w, h) while dragging, if any.
-    pub fn current_window_rect(&self) -> Option<(u32, u32, u32, u32)> {
-        let (s, e) = (self.drag_start?, self.drag_end?);
+    /// Translate one winit WindowEvent into a state transition and return
+    /// what app.rs should do next.
+    pub fn handle_event(&mut self, event: WindowEvent) -> Outcome {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor = (position.x as i32, position.y as i32);
+                if let OverlayState::Dragging { start, .. } = self.state {
+                    self.state = state::on_mouse_move_dragging(start, self.cursor);
+                    self.window.request_redraw();
+                }
+                Outcome::Continue
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if matches!(self.state, OverlayState::Idle) {
+                    self.state = state::on_mouse_down_idle(self.cursor);
+                    self.window.request_redraw();
+                }
+                Outcome::Continue
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                // Task 3 keeps Iter-1 behavior: MouseUp confirms immediately
+                // if there's an actual drag. Task 4 will flip this to enter
+                // Adjusting instead.
+                if let OverlayState::Dragging { start, end } = self.state {
+                    let rect = Rect::normalize(start, end);
+                    self.state = OverlayState::Idle;
+                    if rect.w > 0 && rect.h > 0 {
+                        return Outcome::Confirmed(rect);
+                    }
+                    return Outcome::Cancelled;
+                }
+                Outcome::Continue
+            }
+            WindowEvent::RedrawRequested => {
+                if let Err(e) = self.redraw() {
+                    eprintln!("redraw error: {e:?}");
+                }
+                Outcome::Continue
+            }
+            WindowEvent::CloseRequested => Outcome::Cancelled,
+            _ => Outcome::Continue,
+        }
+    }
+
+    fn current_selection_rect_window(&self) -> Option<(u32, u32, u32, u32)> {
+        let r = match self.state {
+            OverlayState::Idle => return None,
+            OverlayState::Dragging { start, end } => Rect::normalize(start, end),
+            OverlayState::Adjusting { rect, .. } => rect,
+        };
         let size = self.window.inner_size();
-        crop::normalize_rect(s, e, (size.width, size.height))
+        let r = r.clamp_to((size.width, size.height));
+        if r.w == 0 || r.h == 0 {
+            None
+        } else {
+            Some(r.as_tuple_u32())
+        }
     }
 
     /// Translate a window-space rect into a frame-space rect.
-    pub fn window_rect_to_frame_rect(
-        &self,
-        rect: (u32, u32, u32, u32),
-    ) -> (u32, u32, u32, u32) {
+    pub fn window_rect_to_frame_rect(&self, rect: Rect) -> (u32, u32, u32, u32) {
         let size = self.window.inner_size();
         let (ww, wh) = (size.width.max(1), size.height.max(1));
         let (fw, fh) = self.frame.dimensions();
-        let (x, y, w, h) = rect;
+        let clamped = rect.clamp_to((ww, wh));
+        let (x, y, w, h) = clamped.as_tuple_u32();
         let fx = (x as u64 * fw as u64 / ww as u64) as u32;
         let fy = (y as u64 * fh as u64 / wh as u64) as u32;
         let fw2 = (w as u64 * fw as u64 / ww as u64) as u32;
@@ -113,7 +181,7 @@ impl Overlay {
             .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
 
-        let sel = self.current_window_rect();
+        let sel = self.current_selection_rect_window();
 
         let mut buf = self
             .surface
@@ -128,6 +196,16 @@ impl Overlay {
 
         buf.present().map_err(|e| anyhow::anyhow!("{e:?}"))?;
         Ok(())
+    }
+
+    #[allow(dead_code)]
+    fn mark_transition(&mut self, t: Transition) -> Outcome {
+        // Helper so Task 4+ can route Enter/ESC/double-click results.
+        match t {
+            Transition::Stay => Outcome::Continue,
+            Transition::Confirm(r) => Outcome::Confirmed(r),
+            Transition::Cancel => Outcome::Cancelled,
+        }
     }
 }
 
@@ -151,9 +229,9 @@ fn set_macos_window_level(window: &Window, level: i64) {
         ) -> *mut std::ffi::c_void;
         fn sel_registerName(name: *const u8) -> *mut std::ffi::c_void;
     }
-    // appkit.ns_view is a NonNull<c_void> pointing to the NSView.
-    // We send [[[nsView window] setLevel:level] to set the NSWindow level.
     unsafe {
+        // appkit.ns_view is a NonNull<c_void> pointing to the NSView.
+        // We send [[[nsView window] setLevel:level] to set the NSWindow level.
         let ns_view = appkit.ns_view.as_ptr();
         let sel_window = sel_registerName(b"window\0".as_ptr());
         let ns_window = objc_msgSend(ns_view, sel_window);
