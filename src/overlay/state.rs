@@ -96,13 +96,6 @@ pub fn on_mouse_move_dragging(start: (i32, i32), cursor: (i32, i32)) -> OverlayS
     OverlayState::Dragging { start, end: cursor }
 }
 
-pub fn on_mouse_up_dragging(start: (i32, i32), end: (i32, i32)) -> OverlayState {
-    OverlayState::Adjusting {
-        rect: Rect::normalize(start, end),
-        edit: None,
-    }
-}
-
 /// Enter key: confirm if we have a usable rect, otherwise stay.
 pub fn on_enter(current: OverlayState) -> Transition {
     match current {
@@ -228,18 +221,6 @@ mod tests {
             s,
             OverlayState::Dragging { start: (10, 10), end: (25, 30) }
         ));
-    }
-
-    #[test]
-    fn mouse_up_dragging_enters_adjusting() {
-        let s = on_mouse_up_dragging((80, 60), (20, 10));
-        match s {
-            OverlayState::Adjusting { rect, edit } => {
-                assert_eq!(rect, Rect { x: 20, y: 10, w: 60, h: 50 });
-                assert!(edit.is_none());
-            }
-            _ => panic!("expected Adjusting, got {s:?}"),
-        }
     }
 
     #[test]

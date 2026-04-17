@@ -146,7 +146,7 @@ impl Overlay {
             self.last_click,
             Some(t) if now.duration_since(t) < std::time::Duration::from_millis(400)
         );
-        self.last_click = Some(now);
+        self.last_click = Some(now); // running window: each click resets the 400 ms gate
 
         match self.state {
             OverlayState::Idle => {
