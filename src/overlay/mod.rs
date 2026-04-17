@@ -7,7 +7,8 @@ use image::RgbaImage;
 use softbuffer::{Context as SoftContext, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowAttributes};
 
@@ -27,8 +28,9 @@ pub struct Overlay {
     pub window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     pub frame: RgbaImage,
-    pub state: OverlayState,
-    pub cursor: (i32, i32),
+    pub(crate) state: OverlayState,
+    pub(crate) cursor: (i32, i32),
+    last_click: Option<std::time::Instant>,
 }
 
 impl Overlay {
@@ -90,6 +92,7 @@ impl Overlay {
             frame,
             state: OverlayState::Idle,
             cursor: (0, 0),
+            last_click: None,
         })
     }
 
@@ -109,31 +112,22 @@ impl Overlay {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if matches!(self.state, OverlayState::Idle) {
-                    self.state = state::on_mouse_down_idle(self.cursor);
-                    self.window.request_redraw();
-                }
-                Outcome::Continue
-            }
+            } => self.handle_left_press(),
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => {
-                // Task 3 keeps Iter-1 behavior: MouseUp confirms immediately
-                // if there's an actual drag. Task 4 will flip this to enter
-                // Adjusting instead.
-                if let OverlayState::Dragging { start, end } = self.state {
-                    let rect = Rect::normalize(start, end);
-                    self.state = OverlayState::Idle;
-                    if rect.w > 0 && rect.h > 0 {
-                        return Outcome::Confirmed(rect);
-                    }
-                    return Outcome::Cancelled;
-                }
-                Outcome::Continue
-            }
+            } => self.handle_left_release(),
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        state: ElementState::Pressed,
+                        logical_key,
+                        repeat: false,
+                        ..
+                    },
+                ..
+            } => self.handle_key(logical_key),
             WindowEvent::RedrawRequested => {
                 if let Err(e) = self.redraw() {
                     eprintln!("redraw error: {e:?}");
@@ -141,6 +135,67 @@ impl Overlay {
                 Outcome::Continue
             }
             WindowEvent::CloseRequested => Outcome::Cancelled,
+            _ => Outcome::Continue,
+        }
+    }
+
+    fn handle_left_press(&mut self) -> Outcome {
+        // Detect double-click: two presses within 400 ms (position-agnostic).
+        let now = std::time::Instant::now();
+        let is_double_click = matches!(
+            self.last_click,
+            Some(t) if now.duration_since(t) < std::time::Duration::from_millis(400)
+        );
+        self.last_click = Some(now);
+
+        match self.state {
+            OverlayState::Idle => {
+                self.state = state::on_mouse_down_idle(self.cursor);
+                self.window.request_redraw();
+                Outcome::Continue
+            }
+            OverlayState::Dragging { .. } => Outcome::Continue,
+            OverlayState::Adjusting { rect, .. } => {
+                if is_double_click {
+                    match state::on_double_click_adjusting(rect, self.cursor) {
+                        Transition::Confirm(r) => return Outcome::Confirmed(r),
+                        Transition::Cancel => return Outcome::Cancelled,
+                        Transition::Stay => {}
+                    }
+                }
+                // Task 5 will add: if cursor hits an anchor, start Resize;
+                //                  else if inside, start Translate;
+                //                  else (outside) return to Idle.
+                // For Task 4 we simply stay put — user must use Enter/ESC.
+                Outcome::Continue
+            }
+        }
+    }
+
+    fn handle_left_release(&mut self) -> Outcome {
+        if let OverlayState::Dragging { start, end } = self.state {
+            let rect = Rect::normalize(start, end);
+            if rect.w > 0 && rect.h > 0 {
+                self.state = OverlayState::Adjusting { rect, edit: None };
+            } else {
+                // zero-area drag → reset to Idle
+                self.state = OverlayState::Idle;
+            }
+            self.window.request_redraw();
+        }
+        Outcome::Continue
+    }
+
+    fn handle_key(&mut self, key: Key) -> Outcome {
+        match key {
+            Key::Named(NamedKey::Escape) => match state::on_escape(self.state) {
+                Transition::Cancel => Outcome::Cancelled,
+                _ => Outcome::Continue,
+            },
+            Key::Named(NamedKey::Enter) => match state::on_enter(self.state) {
+                Transition::Confirm(r) => Outcome::Confirmed(r),
+                _ => Outcome::Continue,
+            },
             _ => Outcome::Continue,
         }
     }
@@ -198,15 +253,6 @@ impl Overlay {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    fn mark_transition(&mut self, t: Transition) -> Outcome {
-        // Helper so Task 4+ can route Enter/ESC/double-click results.
-        match t {
-            Transition::Stay => Outcome::Continue,
-            Transition::Confirm(r) => Outcome::Confirmed(r),
-            Transition::Cancel => Outcome::Cancelled,
-        }
-    }
 }
 
 /// Set the NSWindow level via raw Objective-C message send.

@@ -103,6 +103,35 @@ pub fn on_mouse_up_dragging(start: (i32, i32), end: (i32, i32)) -> OverlayState 
     }
 }
 
+/// Enter key: confirm if we have a usable rect, otherwise stay.
+pub fn on_enter(current: OverlayState) -> Transition {
+    match current {
+        OverlayState::Idle => Transition::Stay,
+        OverlayState::Dragging { start, end } => {
+            let r = Rect::normalize(start, end);
+            if r.w > 0 && r.h > 0 { Transition::Confirm(r) } else { Transition::Stay }
+        }
+        OverlayState::Adjusting { rect, .. } => {
+            if rect.w > 0 && rect.h > 0 { Transition::Confirm(rect) } else { Transition::Stay }
+        }
+    }
+}
+
+/// ESC: cancel from any state.
+pub fn on_escape(_current: OverlayState) -> Transition {
+    Transition::Cancel
+}
+
+/// Double-click: confirm only if the click falls inside the current rect.
+/// Called only from Adjusting state (the event source filters).
+pub fn on_double_click_adjusting(rect: Rect, cursor: (i32, i32)) -> Transition {
+    if rect.contains(cursor) && rect.w > 0 && rect.h > 0 {
+        Transition::Confirm(rect)
+    } else {
+        Transition::Stay
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +240,58 @@ mod tests {
             }
             _ => panic!("expected Adjusting, got {s:?}"),
         }
+    }
+
+    #[test]
+    fn enter_in_idle_stays() {
+        assert!(matches!(on_enter(OverlayState::Idle), Transition::Stay));
+    }
+
+    #[test]
+    fn enter_in_adjusting_confirms() {
+        let s = OverlayState::Adjusting {
+            rect: Rect { x: 1, y: 1, w: 10, h: 10 },
+            edit: None,
+        };
+        match on_enter(s) {
+            Transition::Confirm(r) => assert_eq!(r, Rect { x: 1, y: 1, w: 10, h: 10 }),
+            t => panic!("expected Confirm, got {t:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_in_dragging_confirms_normalized() {
+        let s = OverlayState::Dragging { start: (5, 5), end: (25, 15) };
+        match on_enter(s) {
+            Transition::Confirm(r) => assert_eq!(r, Rect { x: 5, y: 5, w: 20, h: 10 }),
+            t => panic!("expected Confirm, got {t:?}"),
+        }
+    }
+
+    #[test]
+    fn escape_always_cancels() {
+        assert!(matches!(on_escape(OverlayState::Idle), Transition::Cancel));
+        assert!(matches!(
+            on_escape(OverlayState::Dragging { start: (0, 0), end: (10, 10) }),
+            Transition::Cancel
+        ));
+    }
+
+    #[test]
+    fn double_click_inside_confirms() {
+        let r = Rect { x: 10, y: 10, w: 20, h: 20 };
+        match on_double_click_adjusting(r, (15, 15)) {
+            Transition::Confirm(got) => assert_eq!(got, r),
+            t => panic!("expected Confirm, got {t:?}"),
+        }
+    }
+
+    #[test]
+    fn double_click_outside_stays() {
+        let r = Rect { x: 10, y: 10, w: 20, h: 20 };
+        assert!(matches!(
+            on_double_click_adjusting(r, (40, 40)),
+            Transition::Stay
+        ));
     }
 }
