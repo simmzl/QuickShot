@@ -11,7 +11,9 @@ arboard = "3.4"
 fontdue = "0.9"
 global-hotkey = "0.6"
 image = { version = "0.25", default-features = false, features = ["png"] }
+notify-rust = "4"
 softbuffer = "0.4"
+tray-icon = "0.22"
 winit = "0.30"
 xcap = "0.9"
 

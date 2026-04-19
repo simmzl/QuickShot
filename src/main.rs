@@ -3,6 +3,7 @@ mod capture;
 mod clipboard;
 mod crop;
 mod hotkey;
+mod notification;
 mod overlay;
 mod permission;
 mod text;
