@@ -102,9 +102,20 @@ impl Overlay {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x as i32, position.y as i32);
-                if let OverlayState::Dragging { start, .. } = self.state {
-                    self.state = state::on_mouse_move_dragging(start, self.cursor);
-                    self.window.request_redraw();
+                match self.state {
+                    OverlayState::Dragging { start, .. } => {
+                        self.state = state::on_mouse_move_dragging(start, self.cursor);
+                        self.window.request_redraw();
+                    }
+                    OverlayState::Adjusting { edit: Some(_), .. } => {
+                        self.state = state::update_edit(self.state, self.cursor);
+                        self.window.request_redraw();
+                    }
+                    OverlayState::Adjusting { rect, edit: None } => {
+                        let icon = hit::cursor_icon_for(hit::classify(self.cursor, rect));
+                        self.window.set_cursor(icon);
+                    }
+                    OverlayState::Idle => {}
                 }
                 Outcome::Continue
             }
@@ -163,25 +174,41 @@ impl Overlay {
                         Transition::Stay => {}
                     }
                 }
-                // Task 5 will add: if cursor hits an anchor, start Resize;
-                //                  else if inside, start Translate;
-                //                  else (outside) return to Idle.
-                // For Task 4 we simply stay put — user must use Enter/ESC.
+                match hit::classify(self.cursor, rect) {
+                    hit::HitZone::Anchor(a) => {
+                        self.state = state::start_resize(rect, a, self.cursor);
+                        self.window.request_redraw();
+                    }
+                    hit::HitZone::Inside => {
+                        self.state = state::start_translate(rect, self.cursor);
+                        self.window.request_redraw();
+                    }
+                    hit::HitZone::Outside => {
+                        self.state = OverlayState::Idle;
+                        self.window.request_redraw();
+                    }
+                }
                 Outcome::Continue
             }
         }
     }
 
     fn handle_left_release(&mut self) -> Outcome {
-        if let OverlayState::Dragging { start, end } = self.state {
-            let rect = Rect::normalize(start, end);
-            if rect.w > 0 && rect.h > 0 {
-                self.state = OverlayState::Adjusting { rect, edit: None };
-            } else {
-                // zero-area drag → reset to Idle
-                self.state = OverlayState::Idle;
+        match self.state {
+            OverlayState::Dragging { start, end } => {
+                let rect = Rect::normalize(start, end);
+                if rect.w > 0 && rect.h > 0 {
+                    self.state = OverlayState::Adjusting { rect, edit: None };
+                } else {
+                    self.state = OverlayState::Idle;
+                }
+                self.window.request_redraw();
             }
-            self.window.request_redraw();
+            OverlayState::Adjusting { edit: Some(_), .. } => {
+                self.state = state::commit_edit(self.state);
+                self.window.request_redraw();
+            }
+            _ => {}
         }
         Outcome::Continue
     }
@@ -198,6 +225,17 @@ impl Overlay {
             },
             _ => Outcome::Continue,
         }
+    }
+
+    fn current_selection_rect(&self) -> Option<Rect> {
+        let r = match self.state {
+            OverlayState::Idle => return None,
+            OverlayState::Dragging { start, end } => Rect::normalize(start, end),
+            OverlayState::Adjusting { rect, .. } => rect,
+        };
+        let size = self.window.inner_size();
+        let r = r.clamp_to((size.width, size.height));
+        if r.w == 0 || r.h == 0 { None } else { Some(r) }
     }
 
     fn current_selection_rect_window(&self) -> Option<(u32, u32, u32, u32)> {
@@ -236,7 +274,8 @@ impl Overlay {
             .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
 
-        let sel = self.current_selection_rect_window();
+        let sel_tuple = self.current_selection_rect_window();
+        let sel_rect = self.current_selection_rect();
 
         let mut buf = self
             .surface
@@ -244,9 +283,14 @@ impl Overlay {
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
 
         render::draw_background(&mut buf, w, h, &self.frame);
-        render::apply_dim(&mut buf, w, h, sel);
-        if let Some(r) = sel {
+        render::apply_dim(&mut buf, w, h, sel_tuple);
+        if let Some(r) = sel_tuple {
             render::draw_selection_outline(&mut buf, w, h, r, 0x00FFFFFF);
+        }
+        if matches!(self.state, OverlayState::Adjusting { .. }) {
+            if let Some(r) = sel_rect {
+                render::draw_anchors(&mut buf, w, h, r);
+            }
         }
 
         buf.present().map_err(|e| anyhow::anyhow!("{e:?}"))?;

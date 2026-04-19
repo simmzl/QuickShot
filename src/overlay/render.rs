@@ -1,4 +1,6 @@
 use image::RgbaImage;
+use crate::overlay::hit::ANCHOR_SIZE;
+use crate::overlay::state::{Anchor, Rect};
 
 /// Copy the captured frame into the softbuffer surface, nearest-neighbor
 /// scaled to the window's pixel dimensions. Softbuffer's pixel format is
@@ -33,6 +35,47 @@ pub fn apply_dim(buf: &mut [u32], w: u32, h: u32, inside: Option<(u32, u32, u32,
                 let b = (px & 0xFF) / 2;
                 buf[i] = (r << 16) | (g << 8) | b;
             }
+        }
+    }
+}
+
+pub fn draw_anchors(buf: &mut [u32], w: u32, h: u32, rect: Rect) {
+    if rect.w <= 0 || rect.h <= 0 {
+        return;
+    }
+    const WHITE: u32 = 0x00FFFFFF;
+    const BLACK: u32 = 0x00000000;
+    let anchors = [
+        Anchor::TL, Anchor::T, Anchor::TR, Anchor::R,
+        Anchor::BR, Anchor::B, Anchor::BL, Anchor::L,
+    ];
+    let half = ANCHOR_SIZE / 2;
+    let (l, t) = (rect.x, rect.y);
+    let (r, b) = (rect.x + rect.w - 1, rect.y + rect.h - 1);
+    let (cx, cy) = (rect.x + rect.w / 2, rect.y + rect.h / 2);
+    for a in anchors {
+        let (ax, ay) = match a {
+            Anchor::TL => (l, t),
+            Anchor::T  => (cx, t),
+            Anchor::TR => (r, t),
+            Anchor::R  => (r, cy),
+            Anchor::BR => (r, b),
+            Anchor::B  => (cx, b),
+            Anchor::BL => (l, b),
+            Anchor::L  => (l, cy),
+        };
+        fill_square(buf, w, h, ax - half - 1, ay - half - 1, ANCHOR_SIZE + 2, BLACK);
+        fill_square(buf, w, h, ax - half,     ay - half,     ANCHOR_SIZE,     WHITE);
+    }
+}
+
+fn fill_square(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, size: i32, color: u32) {
+    for dy in 0..size {
+        for dx in 0..size {
+            let px = x + dx;
+            let py = y + dy;
+            if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 { continue; }
+            buf[(py as u32 * w + px as u32) as usize] = color;
         }
     }
 }

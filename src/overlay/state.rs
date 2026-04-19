@@ -125,6 +125,57 @@ pub fn on_double_click_adjusting(rect: Rect, cursor: (i32, i32)) -> Transition {
     }
 }
 
+/// In Adjusting state, a MouseDown on an anchor begins a resize edit.
+pub fn start_resize(rect: Rect, anchor: Anchor, cursor: (i32, i32)) -> OverlayState {
+    OverlayState::Adjusting {
+        rect,
+        edit: Some(Edit::Resize { anchor, origin: rect, from: cursor }),
+    }
+}
+
+/// In Adjusting state, a MouseDown inside the rect begins a translate edit.
+pub fn start_translate(rect: Rect, cursor: (i32, i32)) -> OverlayState {
+    OverlayState::Adjusting {
+        rect,
+        edit: Some(Edit::Translate { origin: rect, from: cursor }),
+    }
+}
+
+/// Apply cursor movement to an in-flight edit and return the updated state.
+pub fn update_edit(state: OverlayState, cursor: (i32, i32)) -> OverlayState {
+    let OverlayState::Adjusting { edit: Some(edit), .. } = state else {
+        return state;
+    };
+    match edit {
+        Edit::Resize { anchor, origin, from } => {
+            let (dx, dy) = (cursor.0 - from.0, cursor.1 - from.1);
+            let new_rect = origin.resize_from_anchor(anchor, dx, dy);
+            OverlayState::Adjusting {
+                rect: new_rect,
+                edit: Some(Edit::Resize { anchor, origin, from }),
+            }
+        }
+        Edit::Translate { origin, from } => {
+            let (dx, dy) = (cursor.0 - from.0, cursor.1 - from.1);
+            let new_rect = origin.translate(dx, dy);
+            OverlayState::Adjusting {
+                rect: new_rect,
+                edit: Some(Edit::Translate { origin, from }),
+            }
+        }
+    }
+}
+
+/// Commit the in-flight edit on MouseUp: clears `edit`, keeps the final rect.
+pub fn commit_edit(state: OverlayState) -> OverlayState {
+    match state {
+        OverlayState::Adjusting { rect, edit: Some(_) } => {
+            OverlayState::Adjusting { rect, edit: None }
+        }
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +325,60 @@ mod tests {
             on_double_click_adjusting(r, (40, 40)),
             Transition::Stay
         ));
+    }
+
+    #[test]
+    fn start_resize_stores_edit() {
+        let r = Rect { x: 10, y: 10, w: 20, h: 20 };
+        let s = start_resize(r, Anchor::BR, (29, 29));
+        match s {
+            OverlayState::Adjusting { rect, edit: Some(Edit::Resize { anchor, origin, from }) } => {
+                assert_eq!(rect, r);
+                assert_eq!(anchor, Anchor::BR);
+                assert_eq!(origin, r);
+                assert_eq!(from, (29, 29));
+            }
+            _ => panic!("expected Adjusting with Resize edit"),
+        }
+    }
+
+    #[test]
+    fn update_resize_grows_br() {
+        let r = Rect { x: 10, y: 10, w: 20, h: 20 };
+        let s = start_resize(r, Anchor::BR, (29, 29));
+        let s2 = update_edit(s, (35, 37));
+        match s2 {
+            OverlayState::Adjusting { rect, .. } => {
+                assert_eq!(rect, Rect { x: 10, y: 10, w: 26, h: 28 });
+            }
+            _ => panic!("expected Adjusting"),
+        }
+    }
+
+    #[test]
+    fn update_translate_moves_whole_rect() {
+        let r = Rect { x: 10, y: 10, w: 20, h: 20 };
+        let s = start_translate(r, (15, 15));
+        let s2 = update_edit(s, (18, 12));
+        match s2 {
+            OverlayState::Adjusting { rect, .. } => {
+                assert_eq!(rect, Rect { x: 13, y: 7, w: 20, h: 20 });
+            }
+            _ => panic!("expected Adjusting"),
+        }
+    }
+
+    #[test]
+    fn commit_clears_edit_but_keeps_rect() {
+        let r = Rect { x: 10, y: 10, w: 20, h: 20 };
+        let s = start_resize(r, Anchor::BR, (29, 29));
+        let s2 = update_edit(s, (35, 37));
+        let s3 = commit_edit(s2);
+        match s3 {
+            OverlayState::Adjusting { rect, edit: None } => {
+                assert_eq!(rect, Rect { x: 10, y: 10, w: 26, h: 28 });
+            }
+            _ => panic!("expected Adjusting with edit=None"),
+        }
     }
 }
