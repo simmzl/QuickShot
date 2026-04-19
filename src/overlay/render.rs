@@ -294,7 +294,7 @@ pub fn draw_magnifier(
 
     // Center crosshair (1 px horizontal + 1 px vertical lines across the zoom area).
     let cx = mx + MAG_SIZE / 2;
-    let cy = my + (MAG_SIZE - MAG_LABEL_H) / 2;
+    let cy = my + (src_span / 2) * MAG_ZOOM;
     for dx in 0..MAG_SIZE {
         let px = mx + dx;
         if px < 0 || cy < 0 || px >= w as i32 || cy >= h as i32 { continue; }
