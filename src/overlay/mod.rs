@@ -31,6 +31,7 @@ pub struct Overlay {
     pub(crate) state: OverlayState,
     pub(crate) cursor: (i32, i32),
     last_click: Option<std::time::Instant>,
+    font: crate::text::Font,
 }
 
 impl Overlay {
@@ -93,6 +94,7 @@ impl Overlay {
             state: OverlayState::Idle,
             cursor: (0, 0),
             last_click: None,
+            font: crate::text::Font::embedded(),
         })
     }
 
@@ -265,7 +267,16 @@ impl Overlay {
 
         let sel_tuple = self.current_selection_rect_window();
         let sel_rect = self.current_selection_rect();
+        let show_label = matches!(
+            self.state,
+            OverlayState::Dragging { .. } | OverlayState::Adjusting { .. }
+        );
+        let frame_size = self.frame.dimensions();
+        let window_size = (w, h);
 
+        // Split borrows: extract font reference before calling buffer_mut
+        // so the borrow checker sees distinct field paths.
+        let font = &mut self.font;
         let mut buf = self
             .surface
             .buffer_mut()
@@ -279,6 +290,11 @@ impl Overlay {
         if matches!(self.state, OverlayState::Adjusting { .. }) {
             if let Some(r) = sel_rect {
                 render::draw_anchors(&mut buf, w, h, r);
+            }
+        }
+        if show_label {
+            if let Some(r) = sel_rect {
+                render::draw_size_label(&mut buf, w, h, r, frame_size, window_size, font);
             }
         }
 

@@ -68,6 +68,137 @@ fn fill_square(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, size: i32, color
     }
 }
 
+use crate::text::Font;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelPlacement {
+    AboveOutside,
+    InsideTopLeft,
+}
+
+/// Decide where to place the size label given the selection rect and the
+/// label's own pixel dimensions.
+pub fn size_label_position(
+    rect: Rect,
+    label_size: (i32, i32),
+    gap: i32,
+) -> (i32, i32, LabelPlacement) {
+    let (_lw, lh) = label_size;
+    let above_y = rect.y - gap - lh;
+    if above_y >= 0 {
+        (rect.x, above_y, LabelPlacement::AboveOutside)
+    } else {
+        (rect.x + gap, rect.y + gap, LabelPlacement::InsideTopLeft)
+    }
+}
+
+const LABEL_FONT_PX: f32 = 12.0;
+const LABEL_PAD_X: i32 = 4;
+const LABEL_PAD_Y: i32 = 2;
+const LABEL_GAP: i32 = 4;
+const LABEL_CORNER_RADIUS: i32 = 4;
+
+/// Draw the `W × H` label pinned to the selection's top-left. `frame_size`
+/// is the captured frame's pixel dimensions; `window_size` is the overlay
+/// window's pixel dimensions. The label shows physical-pixel dims of the
+/// cropped region so the number matches the eventual PNG.
+pub fn draw_size_label(
+    buf: &mut [u32],
+    w: u32,
+    h: u32,
+    rect: Rect,
+    frame_size: (u32, u32),
+    window_size: (u32, u32),
+    font: &mut Font,
+) {
+    if rect.w <= 0 || rect.h <= 0 {
+        return;
+    }
+    let (fw, fh) = frame_size;
+    let (ww, wh) = (window_size.0.max(1), window_size.1.max(1));
+    // Window-space rect -> frame-space dims (same math as Overlay::window_rect_to_frame_rect)
+    let phys_w = (rect.w as u64 * fw as u64 / ww as u64) as u32;
+    let phys_h = (rect.h as u64 * fh as u64 / wh as u64) as u32;
+    let text = format!("{} \u{00D7} {}", phys_w.max(1), phys_h.max(1));
+
+    let text_w = estimate_text_width(&text, LABEL_FONT_PX);
+    let text_h = LABEL_FONT_PX as i32; // approximate cap height
+    let box_w = text_w + LABEL_PAD_X * 2;
+    let box_h = text_h + LABEL_PAD_Y * 2;
+
+    let (bx, by, _placement) = size_label_position(rect, (box_w, box_h), LABEL_GAP);
+    draw_rounded_rect_alpha(buf, w, h, bx, by, box_w, box_h, LABEL_CORNER_RADIUS, 0x000000, 0.7);
+    font.render_text(
+        buf,
+        w,
+        h,
+        bx + LABEL_PAD_X,
+        by + LABEL_PAD_Y,
+        &text,
+        LABEL_FONT_PX,
+        0x00FFFFFF,
+    );
+}
+
+/// Rough width estimate for monospace: each glyph is ~`0.6 * px_size` wide.
+/// Used only for laying out the background pill; the text renderer handles
+/// real advance widths.
+fn estimate_text_width(text: &str, px_size: f32) -> i32 {
+    (text.chars().count() as f32 * px_size * 0.6).ceil() as i32
+}
+
+/// Filled rect with alpha-blended solid color and squared corners masked into
+/// a 4-px rounded pill.
+fn draw_rounded_rect_alpha(
+    buf: &mut [u32],
+    w: u32,
+    h: u32,
+    x: i32,
+    y: i32,
+    rw: i32,
+    rh: i32,
+    radius: i32,
+    color_rgb: u32,
+    alpha: f32,
+) {
+    let (fr, fg, fb) = (
+        ((color_rgb >> 16) & 0xFF) as f32,
+        ((color_rgb >> 8) & 0xFF) as f32,
+        (color_rgb & 0xFF) as f32,
+    );
+    for dy in 0..rh {
+        for dx in 0..rw {
+            // Corner mask: distance from nearest corner center.
+            let in_corner_tl = dx < radius && dy < radius;
+            let in_corner_tr = dx >= rw - radius && dy < radius;
+            let in_corner_bl = dx < radius && dy >= rh - radius;
+            let in_corner_br = dx >= rw - radius && dy >= rh - radius;
+            if in_corner_tl || in_corner_tr || in_corner_bl || in_corner_br {
+                let (cx, cy) = (
+                    if dx < radius { radius } else { rw - radius - 1 },
+                    if dy < radius { radius } else { rh - radius - 1 },
+                );
+                let d2 = (dx - cx).pow(2) + (dy - cy).pow(2);
+                if d2 > radius * radius {
+                    continue;
+                }
+            }
+            let px = x + dx;
+            let py = y + dy;
+            if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 { continue; }
+            let idx = (py as u32 * w + px as u32) as usize;
+            let bg = buf[idx];
+            let br = ((bg >> 16) & 0xFF) as f32;
+            let bgc = ((bg >> 8) & 0xFF) as f32;
+            let bb = (bg & 0xFF) as f32;
+            let r = (fr * alpha + br * (1.0 - alpha)) as u32;
+            let g = (fg * alpha + bgc * (1.0 - alpha)) as u32;
+            let b = (fb * alpha + bb * (1.0 - alpha)) as u32;
+            buf[idx] = (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
 /// Draw a 1-px-thick rectangle outline in the given color (0x00RRGGBB).
 pub fn draw_selection_outline(
     buf: &mut [u32],
@@ -93,5 +224,28 @@ pub fn draw_selection_outline(
     for y in y1..=y2.min(ymax) {
         buf[(y * w + x1.min(xmax)) as usize] = color;
         buf[(y * w + x2.min(xmax)) as usize] = color;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_positions_above_when_space_available() {
+        let r = Rect { x: 100, y: 100, w: 50, h: 50 };
+        let (lx, ly, placement) = size_label_position(r, (40, 16), 4);
+        assert_eq!(placement, LabelPlacement::AboveOutside);
+        assert_eq!(lx, 100);
+        assert_eq!(ly, 100 - 4 - 16);
+    }
+
+    #[test]
+    fn label_flips_inside_when_no_room_above() {
+        let r = Rect { x: 100, y: 5, w: 50, h: 50 };
+        let (lx, ly, placement) = size_label_position(r, (40, 16), 4);
+        assert_eq!(placement, LabelPlacement::InsideTopLeft);
+        assert_eq!(lx, 100 + 4);
+        assert_eq!(ly, 5 + 4);
     }
 }
