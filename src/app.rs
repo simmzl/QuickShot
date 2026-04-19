@@ -119,9 +119,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.capture_full_screen();
             }
             UserEvent::Quit => {
-                // Filled in by Task 5 (after tray is installed; Task 5 replaces this stub
-                // with `event_loop.exit()`).
-                eprintln!("quit (stub)");
+                event_loop.exit();
             }
         }
     }

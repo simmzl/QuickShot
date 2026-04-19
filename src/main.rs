@@ -7,6 +7,7 @@ mod notification;
 mod overlay;
 mod permission;
 mod text;
+mod tray;
 
 use anyhow::Result;
 use winit::event_loop::EventLoop;
@@ -16,9 +17,12 @@ fn main() -> Result<()> {
 
     let event_loop = EventLoop::<app::UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
-    let _hotkey_guard = hotkey::register(proxy)?;
+    let _hotkey_guard = hotkey::register(proxy.clone())?;
+    let _tray_guard = tray::install(proxy.clone())?;
 
-    println!("quickshot running; press Ctrl/Cmd+Shift+A to capture. Ctrl+C to quit.");
+    println!(
+        "quickshot running; press Cmd/Ctrl+Shift+A for region, Cmd/Ctrl+Shift+S for screen. Quit via tray or Ctrl+C."
+    );
 
     let mut app = app::App::new();
     event_loop.run_app(&mut app)?;
