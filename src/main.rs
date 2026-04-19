@@ -1,6 +1,7 @@
 mod app;
 mod capture;
 mod clipboard;
+mod config;
 mod crop;
 mod hotkey;
 mod notification;
