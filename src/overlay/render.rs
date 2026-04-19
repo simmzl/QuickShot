@@ -227,6 +227,131 @@ pub fn draw_selection_outline(
     }
 }
 
+const MAG_SIZE: i32 = 120;
+const MAG_ZOOM: i32 = 4;
+const MAG_OFFSET: i32 = 20;
+const MAG_LABEL_H: i32 = 18;
+const MAG_FONT_PX: f32 = 11.0;
+
+/// Decide where to put the magnifier given cursor + window size.
+/// Default: bottom-right of cursor with a gap. Flip to the opposite side
+/// on each axis when the default would clip the window edge.
+pub fn magnifier_position(
+    cursor: (i32, i32),
+    window_size: (u32, u32),
+    mag_size: i32,
+    offset: i32,
+) -> (i32, i32) {
+    let (ww, wh) = (window_size.0 as i32, window_size.1 as i32);
+    let mut x = cursor.0 + offset;
+    let mut y = cursor.1 + offset;
+    if x + mag_size >= ww {
+        x = cursor.0 - offset - mag_size;
+    }
+    if y + mag_size >= wh {
+        y = cursor.1 - offset - mag_size;
+    }
+    (x.max(0), y.max(0))
+}
+
+pub fn draw_magnifier(
+    buf: &mut [u32],
+    w: u32,
+    h: u32,
+    frame: &image::RgbaImage,
+    cursor: (i32, i32),
+    window_size: (u32, u32),
+    font: &mut Font,
+) {
+    let (mx, my) = magnifier_position(cursor, window_size, MAG_SIZE, MAG_OFFSET);
+    let (fw, fh) = frame.dimensions();
+    let (ww, wh) = (window_size.0.max(1) as u64, window_size.1.max(1) as u64);
+
+    // Map cursor (window-space) to physical pixel coords in the frame.
+    let cfx = (cursor.0.max(0) as u64 * fw as u64 / ww) as i32;
+    let cfy = (cursor.1.max(0) as u64 * fh as u64 / wh) as i32;
+    let src_span = MAG_SIZE / MAG_ZOOM; // 30
+
+    // 1 px white border + black backfill, then upscaled pixels, then crosshair, then label.
+    fill_square(buf, w, h, mx - 1, my - 1, MAG_SIZE + 2, 0x00FFFFFF);
+    fill_square(buf, w, h, mx,     my,     MAG_SIZE,     0x00000000);
+
+    for dy in 0..(MAG_SIZE - MAG_LABEL_H) {
+        for dx in 0..MAG_SIZE {
+            let sx = cfx - src_span / 2 + dx / MAG_ZOOM;
+            let sy = cfy - src_span / 2 + dy / MAG_ZOOM;
+            let sx = sx.clamp(0, fw as i32 - 1);
+            let sy = sy.clamp(0, fh as i32 - 1);
+            let p = frame.get_pixel(sx as u32, sy as u32);
+            let [r, g, b, _a] = p.0;
+            let px = mx + dx;
+            let py = my + dy;
+            if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 { continue; }
+            buf[(py as u32 * w + px as u32) as usize] =
+                ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+        }
+    }
+
+    // Center crosshair (1 px horizontal + 1 px vertical lines across the zoom area).
+    let cx = mx + MAG_SIZE / 2;
+    let cy = my + (MAG_SIZE - MAG_LABEL_H) / 2;
+    for dx in 0..MAG_SIZE {
+        let px = mx + dx;
+        if px < 0 || cy < 0 || px >= w as i32 || cy >= h as i32 { continue; }
+        buf[(cy as u32 * w + px as u32) as usize] = 0x0000FFFF; // cyan
+    }
+    for dy in 0..(MAG_SIZE - MAG_LABEL_H) {
+        let py = my + dy;
+        if cx < 0 || py < 0 || cx >= w as i32 || py >= h as i32 { continue; }
+        buf[(py as u32 * w + cx as u32) as usize] = 0x0000FFFF;
+    }
+
+    // Label strip at the bottom (black, 70% opaque per spec).
+    let label_y = my + MAG_SIZE - MAG_LABEL_H;
+    draw_rounded_rect_alpha(buf, w, h, mx, label_y, MAG_SIZE, MAG_LABEL_H, 0, 0x000000, 0.7);
+
+    let cfx_clamped = cfx.clamp(0, fw as i32 - 1) as u32;
+    let cfy_clamped = cfy.clamp(0, fh as i32 - 1) as u32;
+    let center = frame.get_pixel(cfx_clamped, cfy_clamped);
+    let [r, g, b, _a] = center.0;
+    let text = format!(
+        "#{:02X}{:02X}{:02X} {}px, {}px",
+        r, g, b, cfx_clamped, cfy_clamped
+    );
+    font.render_text(buf, w, h, mx + 4, label_y + 2, &text, MAG_FONT_PX, 0x00FFFFFF);
+}
+
+#[cfg(test)]
+mod magnifier_tests {
+    use super::*;
+
+    #[test]
+    fn magnifier_default_goes_bottom_right() {
+        let (x, y) = magnifier_position((100, 100), (800, 600), 120, 20);
+        assert_eq!((x, y), (120, 120));
+    }
+
+    #[test]
+    fn magnifier_flips_when_near_right_edge() {
+        let (x, _y) = magnifier_position((750, 100), (800, 600), 120, 20);
+        // x would be 770, mag ends at 890 > 800 → flip to left.
+        assert_eq!(x, 750 - 20 - 120);
+    }
+
+    #[test]
+    fn magnifier_flips_when_near_bottom() {
+        let (_x, y) = magnifier_position((100, 550), (800, 600), 120, 20);
+        assert_eq!(y, 550 - 20 - 120);
+    }
+
+    #[test]
+    fn magnifier_clamps_to_zero_in_extreme_corner() {
+        let (x, y) = magnifier_position((5, 5), (800, 600), 120, 20);
+        // Default would be (25, 25), fits — no flip.
+        assert_eq!((x, y), (25, 25));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

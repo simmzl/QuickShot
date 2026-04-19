@@ -117,7 +117,10 @@ impl Overlay {
                         let icon = hit::cursor_icon_for(hit::classify(self.cursor, rect));
                         self.window.set_cursor(icon);
                     }
-                    OverlayState::Idle => {}
+                    OverlayState::Idle => {
+                        // Magnifier must follow cursor while idle.
+                        self.window.request_redraw();
+                    }
                 }
                 Outcome::Continue
             }
@@ -271,18 +274,22 @@ impl Overlay {
             self.state,
             OverlayState::Dragging { .. } | OverlayState::Adjusting { .. }
         );
+        let show_magnifier = matches!(
+            self.state,
+            OverlayState::Idle | OverlayState::Dragging { .. }
+        );
         let frame_size = self.frame.dimensions();
         let window_size = (w, h);
-
-        // Split borrows: extract font reference before calling buffer_mut
-        // so the borrow checker sees distinct field paths.
+        let cursor = self.cursor;
+        let frame_ref = &self.frame;
         let font = &mut self.font;
+
         let mut buf = self
             .surface
             .buffer_mut()
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
 
-        render::draw_background(&mut buf, w, h, &self.frame);
+        render::draw_background(&mut buf, w, h, frame_ref);
         render::apply_dim(&mut buf, w, h, sel_tuple);
         if let Some(r) = sel_tuple {
             render::draw_selection_outline(&mut buf, w, h, r, 0x00FFFFFF);
@@ -292,9 +299,28 @@ impl Overlay {
                 render::draw_anchors(&mut buf, w, h, r);
             }
         }
+        if show_magnifier {
+            render::draw_magnifier(
+                &mut buf,
+                w,
+                h,
+                frame_ref,
+                cursor,
+                window_size,
+                font,
+            );
+        }
         if show_label {
             if let Some(r) = sel_rect {
-                render::draw_size_label(&mut buf, w, h, r, frame_size, window_size, font);
+                render::draw_size_label(
+                    &mut buf,
+                    w,
+                    h,
+                    r,
+                    frame_size,
+                    window_size,
+                    font,
+                );
             }
         }
 
