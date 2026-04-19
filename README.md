@@ -2,11 +2,47 @@
 
 Small, fast screenshot tool for macOS and Windows. Pure Rust.
 
+## Install (macOS)
+
+Download the latest `quickshot-<VERSION>.dmg` from Releases (or build it yourself — see [Build](#build)). Double-click the DMG, drag `quickshot.app` to the `Applications` folder, eject the DMG.
+
+First launch: Finder will warn that "quickshot.app can't be opened because it is from an unidentified developer." This is expected for open-source apps without Apple Developer ID signing. Work around it once:
+
+1. Open `Applications` in Finder.
+2. **Right-click** `quickshot.app` → **Open**.
+3. Click **Open** in the confirmation sheet.
+
+macOS remembers the override. Future launches (including autostart at login) work without the prompt.
+
+On first capture, macOS will also ask for Screen Recording permission: System Settings → Privacy & Security → Screen Recording → enable `quickshot`, then relaunch the app.
+
+### Uninstall
+
+    # If autostart was installed:
+    /Applications/quickshot.app/Contents/MacOS/quickshot --uninstall-autostart
+
+    # Remove the app itself:
+    rm -rf /Applications/quickshot.app
+
+    # Optional: remove config + saved screenshots config dir:
+    rm -rf ~/.config/quickshot
+
 ## Build
 
     cargo build --release
 
 Binary lands at `target/release/quickshot`.
+
+### Package as .app + .dmg
+
+    bash scripts/package.sh
+
+Produces:
+
+- `dist/quickshot.app` — universal macOS bundle (x86_64 + aarch64), ad-hoc signed
+- `dist/quickshot-<VERSION>.dmg` — distributable disk image
+
+Environment overrides: `BUNDLE_ID` (default `com.quickshot.app`), `SIGN_IDENTITY` (default `-` ad-hoc; pass an Apple Developer ID identity string for full signing).
 
 ## Run
 
@@ -65,5 +101,12 @@ Filename template placeholders: `{date}` `{time}` `{datetime}` `{w}` `{h}` `{mod
 
 ## Autostart (macOS)
 
-    quickshot --install-autostart      # installs LaunchAgent + launches at login
-    quickshot --uninstall-autostart    # removes it
+When the binary is installed as an app bundle in `/Applications`:
+
+    /Applications/quickshot.app/Contents/MacOS/quickshot --install-autostart
+
+To uninstall:
+
+    /Applications/quickshot.app/Contents/MacOS/quickshot --uninstall-autostart
+
+For bare-binary users (running from `target/release/quickshot`), the same flags apply to that binary path.
