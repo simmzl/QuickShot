@@ -102,6 +102,8 @@ const LABEL_CORNER_RADIUS: i32 = 4;
 /// is the captured frame's pixel dimensions; `window_size` is the overlay
 /// window's pixel dimensions. The label shows physical-pixel dims of the
 /// cropped region so the number matches the eventual PNG.
+/// `scale` is the window's DPI scale factor (1.0 on non-Retina, 2.0 on Retina).
+#[allow(clippy::too_many_arguments)]
 pub fn draw_size_label(
     buf: &mut [u32],
     w: u32,
@@ -110,6 +112,7 @@ pub fn draw_size_label(
     frame_size: (u32, u32),
     window_size: (u32, u32),
     font: &mut Font,
+    scale: f32,
 ) {
     if rect.w <= 0 || rect.h <= 0 {
         return;
@@ -121,21 +124,27 @@ pub fn draw_size_label(
     let phys_h = (rect.h as u64 * fh as u64 / wh as u64) as u32;
     let text = format!("{} \u{00D7} {}", phys_w.max(1), phys_h.max(1));
 
-    let text_w = estimate_text_width(&text, LABEL_FONT_PX);
-    let text_h = LABEL_FONT_PX as i32; // approximate cap height
-    let box_w = text_w + LABEL_PAD_X * 2;
-    let box_h = text_h + LABEL_PAD_Y * 2;
+    let font_px = LABEL_FONT_PX * scale;
+    let pad_x = (LABEL_PAD_X as f32 * scale) as i32;
+    let pad_y = (LABEL_PAD_Y as f32 * scale) as i32;
+    let gap = (LABEL_GAP as f32 * scale) as i32;
+    let corner_radius = (LABEL_CORNER_RADIUS as f32 * scale) as i32;
 
-    let (bx, by, _placement) = size_label_position(rect, (box_w, box_h), LABEL_GAP);
-    draw_rounded_rect_alpha(buf, w, h, bx, by, box_w, box_h, LABEL_CORNER_RADIUS, 0x000000, 0.7);
+    let text_w = estimate_text_width(&text, font_px);
+    let text_h = font_px as i32; // approximate cap height
+    let box_w = text_w + pad_x * 2;
+    let box_h = text_h + pad_y * 2;
+
+    let (bx, by, _placement) = size_label_position(rect, (box_w, box_h), gap);
+    draw_rounded_rect_alpha(buf, w, h, bx, by, box_w, box_h, corner_radius, 0x000000, 0.7);
     font.render_text(
         buf,
         w,
         h,
-        bx + LABEL_PAD_X,
-        by + LABEL_PAD_Y,
+        bx + pad_x,
+        by + pad_y,
         &text,
-        LABEL_FONT_PX,
+        font_px,
         0x00FFFFFF,
     );
 }
@@ -260,6 +269,11 @@ pub fn magnifier_position(
     (x.max(0), y.max(0))
 }
 
+/// `scale` is the window's DPI scale factor (1.0 on non-Retina, 2.0 on Retina).
+/// All logical-pixel constants (MAG_SIZE, MAG_OFFSET, MAG_LABEL_H, MAG_FONT_PX)
+/// are multiplied by scale to get physical pixels. MAG_ZOOM is kept as-is
+/// (it's a zoom ratio, not a size).
+#[allow(clippy::too_many_arguments)]
 pub fn draw_magnifier(
     buf: &mut [u32],
     w: u32,
@@ -268,22 +282,28 @@ pub fn draw_magnifier(
     cursor: (i32, i32),
     window_size: (u32, u32),
     font: &mut Font,
+    scale: f32,
 ) {
-    let (mx, my) = magnifier_position(cursor, window_size, MAG_SIZE, MAG_OFFSET);
+    let mag_size = (MAG_SIZE as f32 * scale) as i32;
+    let offset = (MAG_OFFSET as f32 * scale) as i32;
+    let mag_label_h = (MAG_LABEL_H as f32 * scale) as i32;
+    let font_px = MAG_FONT_PX * scale;
+
+    let (mx, my) = magnifier_position(cursor, window_size, mag_size, offset);
     let (fw, fh) = frame.dimensions();
     let (ww, wh) = (window_size.0.max(1) as u64, window_size.1.max(1) as u64);
 
     // Map cursor (window-space) to physical pixel coords in the frame.
     let cfx = (cursor.0.max(0) as u64 * fw as u64 / ww) as i32;
     let cfy = (cursor.1.max(0) as u64 * fh as u64 / wh) as i32;
-    let src_span = MAG_SIZE / MAG_ZOOM; // 30
+    let src_span = mag_size / MAG_ZOOM;
 
     // 1 px white border + black backfill, then upscaled pixels, then crosshair, then label.
-    fill_square(buf, w, h, mx - 1, my - 1, MAG_SIZE + 2, 0x00FFFFFF);
-    fill_square(buf, w, h, mx,     my,     MAG_SIZE,     0x00000000);
+    fill_square(buf, w, h, mx - 1, my - 1, mag_size + 2, 0x00FFFFFF);
+    fill_square(buf, w, h, mx,     my,     mag_size,     0x00000000);
 
-    for dy in 0..(MAG_SIZE - MAG_LABEL_H) {
-        for dx in 0..MAG_SIZE {
+    for dy in 0..(mag_size - mag_label_h) {
+        for dx in 0..mag_size {
             let sx = cfx - src_span / 2 + dx / MAG_ZOOM;
             let sy = cfy - src_span / 2 + dy / MAG_ZOOM;
             let sx = sx.clamp(0, fw as i32 - 1);
@@ -299,22 +319,22 @@ pub fn draw_magnifier(
     }
 
     // Center crosshair (1 px horizontal + 1 px vertical lines across the zoom area).
-    let cx = mx + MAG_SIZE / 2;
+    let cx = mx + mag_size / 2;
     let cy = my + (src_span / 2) * MAG_ZOOM;
-    for dx in 0..MAG_SIZE {
+    for dx in 0..mag_size {
         let px = mx + dx;
         if px < 0 || cy < 0 || px >= w as i32 || cy >= h as i32 { continue; }
         buf[(cy as u32 * w + px as u32) as usize] = 0x0000FFFF; // cyan
     }
-    for dy in 0..(MAG_SIZE - MAG_LABEL_H) {
+    for dy in 0..(mag_size - mag_label_h) {
         let py = my + dy;
         if cx < 0 || py < 0 || cx >= w as i32 || py >= h as i32 { continue; }
         buf[(py as u32 * w + cx as u32) as usize] = 0x0000FFFF;
     }
 
     // Label strip at the bottom (black, 70% opaque per spec).
-    let label_y = my + MAG_SIZE - MAG_LABEL_H;
-    draw_rounded_rect_alpha(buf, w, h, mx, label_y, MAG_SIZE, MAG_LABEL_H, 0, 0x000000, 0.7);
+    let label_y = my + mag_size - mag_label_h;
+    draw_rounded_rect_alpha(buf, w, h, mx, label_y, mag_size, mag_label_h, 0, 0x000000, 0.7);
 
     let cfx_clamped = cfx.clamp(0, fw as i32 - 1) as u32;
     let cfy_clamped = cfy.clamp(0, fh as i32 - 1) as u32;
@@ -324,7 +344,9 @@ pub fn draw_magnifier(
         "#{:02X}{:02X}{:02X} {}px, {}px",
         r, g, b, cfx_clamped, cfy_clamped
     );
-    font.render_text(buf, w, h, mx + 4, label_y + 2, &text, MAG_FONT_PX, 0x00FFFFFF);
+    let label_pad = (4.0 * scale) as i32;
+    let label_text_offset = (2.0 * scale) as i32;
+    font.render_text(buf, w, h, mx + label_pad, label_y + label_text_offset, &text, font_px, 0x00FFFFFF);
 }
 
 #[cfg(test)]

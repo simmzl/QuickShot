@@ -33,6 +33,7 @@ pub struct Overlay {
     last_click: Option<std::time::Instant>,
     last_redraw: Option<std::time::Instant>,
     font: crate::text::Font,
+    scale_factor: f32,
 }
 
 impl Overlay {
@@ -88,6 +89,7 @@ impl Overlay {
             win
         };
 
+        let scale_factor = window.scale_factor() as f32;
         let window = Rc::new(window);
         let context = SoftContext::new(window.clone()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
         let surface =
@@ -102,6 +104,7 @@ impl Overlay {
             last_click: None,
             last_redraw: None,
             font: crate::text::Font::embedded(),
+            scale_factor,
         })
     }
 
@@ -291,6 +294,7 @@ impl Overlay {
         let cursor = self.cursor;
         let frame_ref = &self.frame;
         let font = &mut self.font;
+        let scale = self.scale_factor;
 
         let mut buf = self
             .surface
@@ -316,6 +320,7 @@ impl Overlay {
                 cursor,
                 window_size,
                 font,
+                scale,
             );
         }
         if show_label {
@@ -328,6 +333,7 @@ impl Overlay {
                     frame_size,
                     window_size,
                     font,
+                    scale,
                 );
             }
         }
@@ -374,8 +380,23 @@ fn make_macos_key_window(window: &Window) {
             ...
         ) -> *mut std::ffi::c_void;
         fn sel_registerName(name: *const u8) -> *mut std::ffi::c_void;
+        fn objc_getClass(name: *const u8) -> *mut std::ffi::c_void;
     }
     unsafe {
+        // Activate the app so it becomes frontmost. CLI daemons start with
+        // NSApp inactive, which means key window doesn't receive global
+        // keyboard events. activateIgnoringOtherApps:YES bypasses the usual
+        // "don't steal focus" behavior — appropriate for a user-triggered
+        // screenshot overlay.
+        let ns_app_class = objc_getClass(c"NSApplication".as_ptr().cast());
+        let sel_shared = sel_registerName(c"sharedApplication".as_ptr().cast());
+        let ns_app = objc_msgSend(ns_app_class, sel_shared);
+        if !ns_app.is_null() {
+            let sel_activate = sel_registerName(c"activateIgnoringOtherApps:".as_ptr().cast());
+            // YES = 1 (BOOL). Variadic args are promoted; 1u64 works for this ABI.
+            objc_msgSend(ns_app, sel_activate, 1u64);
+        }
+
         let ns_view = appkit.ns_view.as_ptr();
         let sel_window = sel_registerName(c"window".as_ptr().cast());
         let ns_window = objc_msgSend(ns_view, sel_window);
