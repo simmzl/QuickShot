@@ -9,9 +9,14 @@ use crate::clipboard;
 use crate::crop;
 use crate::overlay::{state::Rect, Outcome, Overlay};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum UserEvent {
-    HotkeyFired,
+    /// `Cmd/Ctrl+Shift+A` pressed, or "Capture Region" menu item clicked.
+    CaptureRegion,
+    /// `Cmd/Ctrl+Shift+S` pressed, or "Capture Screen" menu item clicked.
+    CaptureScreen,
+    /// "Quit" menu item clicked.
+    Quit,
 }
 
 pub struct App {
@@ -81,10 +86,19 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
-            UserEvent::HotkeyFired => {
+            UserEvent::CaptureRegion => {
                 if let Err(e) = self.open_overlay(event_loop) {
                     eprintln!("open overlay error: {e:?}");
                 }
+            }
+            UserEvent::CaptureScreen => {
+                // Filled in by Task 4.
+                eprintln!("capture screen (stub) — wired up in Task 4");
+            }
+            UserEvent::Quit => {
+                // Filled in by Task 5 (after tray is installed; Task 5 replaces this stub
+                // with `event_loop.exit()`).
+                eprintln!("quit (stub)");
             }
         }
     }

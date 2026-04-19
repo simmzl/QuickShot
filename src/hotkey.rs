@@ -9,6 +9,8 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::app::UserEvent;
 
+/// Keep the manager alive for the program's lifetime.
+/// Dropping it unregisters both hotkeys.
 pub struct HotkeyGuard {
     _manager: GlobalHotKeyManager,
 }
@@ -21,15 +23,26 @@ pub fn register(proxy: EventLoopProxy<UserEvent>) -> Result<HotkeyGuard> {
     #[cfg(not(target_os = "macos"))]
     let mods = Modifiers::CONTROL | Modifiers::SHIFT;
 
-    let hotkey = HotKey::new(Some(mods), Code::KeyA);
-    manager.register(hotkey).context("register hotkey")?;
+    let hk_region = HotKey::new(Some(mods), Code::KeyA);
+    let hk_screen = HotKey::new(Some(mods), Code::KeyS);
+    manager.register(hk_region).context("register region hotkey")?;
+    manager.register(hk_screen).context("register screen hotkey")?;
+
+    let region_id = hk_region.id();
+    let screen_id = hk_screen.id();
 
     let receiver = GlobalHotKeyEvent::receiver();
     thread::spawn(move || loop {
-        if let Ok(_event) = receiver.try_recv() {
-            if let Err(e) = proxy.send_event(UserEvent::HotkeyFired) {
-                eprintln!("hotkey: event loop closed: {e:?}");
-                break;
+        if let Ok(event) = receiver.try_recv() {
+            let msg = if event.id == region_id {
+                Some(UserEvent::CaptureRegion)
+            } else if event.id == screen_id {
+                Some(UserEvent::CaptureScreen)
+            } else {
+                None
+            };
+            if let Some(m) = msg {
+                let _ = proxy.send_event(m);
             }
         }
         thread::sleep(Duration::from_millis(25));
