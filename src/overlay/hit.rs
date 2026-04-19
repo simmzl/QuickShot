@@ -17,7 +17,7 @@ pub enum HitZone {
     Outside,
 }
 
-fn anchor_center(rect: Rect, anchor: Anchor) -> (i32, i32) {
+pub(crate) fn anchor_center(rect: Rect, anchor: Anchor) -> (i32, i32) {
     let (l, t) = (rect.x, rect.y);
     let (r, b) = (rect.x + rect.w - 1, rect.y + rect.h - 1);
     let (cx, cy) = (rect.x + rect.w / 2, rect.y + rect.h / 2);

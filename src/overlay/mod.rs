@@ -239,18 +239,7 @@ impl Overlay {
     }
 
     fn current_selection_rect_window(&self) -> Option<(u32, u32, u32, u32)> {
-        let r = match self.state {
-            OverlayState::Idle => return None,
-            OverlayState::Dragging { start, end } => Rect::normalize(start, end),
-            OverlayState::Adjusting { rect, .. } => rect,
-        };
-        let size = self.window.inner_size();
-        let r = r.clamp_to((size.width, size.height));
-        if r.w == 0 || r.h == 0 {
-            None
-        } else {
-            Some(r.as_tuple_u32())
-        }
+        self.current_selection_rect().map(|r| r.as_tuple_u32())
     }
 
     /// Translate a window-space rect into a frame-space rect.

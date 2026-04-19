@@ -50,20 +50,8 @@ pub fn draw_anchors(buf: &mut [u32], w: u32, h: u32, rect: Rect) {
         Anchor::BR, Anchor::B, Anchor::BL, Anchor::L,
     ];
     let half = ANCHOR_SIZE / 2;
-    let (l, t) = (rect.x, rect.y);
-    let (r, b) = (rect.x + rect.w - 1, rect.y + rect.h - 1);
-    let (cx, cy) = (rect.x + rect.w / 2, rect.y + rect.h / 2);
     for a in anchors {
-        let (ax, ay) = match a {
-            Anchor::TL => (l, t),
-            Anchor::T  => (cx, t),
-            Anchor::TR => (r, t),
-            Anchor::R  => (r, cy),
-            Anchor::BR => (r, b),
-            Anchor::B  => (cx, b),
-            Anchor::BL => (l, b),
-            Anchor::L  => (l, cy),
-        };
+        let (ax, ay) = super::hit::anchor_center(rect, a);
         fill_square(buf, w, h, ax - half - 1, ay - half - 1, ANCHOR_SIZE + 2, BLACK);
         fill_square(buf, w, h, ax - half,     ay - half,     ANCHOR_SIZE,     WHITE);
     }
