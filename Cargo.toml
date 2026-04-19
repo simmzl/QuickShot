@@ -12,7 +12,10 @@ fontdue = "0.9"
 global-hotkey = "0.6"
 image = { version = "0.25", default-features = false, features = ["png"] }
 notify-rust = "4"
+serde = { version = "1", features = ["derive"] }
 softbuffer = "0.4"
+time = { version = "0.3", features = ["formatting", "local-offset", "macros"] }
+toml = "0.8"
 tray-icon = "0.22"
 winit = "0.30"
 xcap = "0.9"
