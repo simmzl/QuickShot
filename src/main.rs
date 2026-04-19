@@ -1,4 +1,5 @@
 mod app;
+mod autostart;
 mod capture;
 mod clipboard;
 mod config;
