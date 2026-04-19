@@ -30,14 +30,39 @@ notification permission ("quickshot wants to send you notifications"). Allow
 it so successful captures can show a confirmation banner. Subsequent
 captures are silent in terms of prompts.
 
-## Status (Iter 2b)
+## Status (Iter 3)
 
-- Region capture via `Cmd+Shift+A` with drag → anchor-adjust → Enter/double-click confirm + ESC cancel
-- Full-screen capture via `Cmd+Shift+S` (cursor's monitor, clipboard + notification)
+- Region capture via configurable hotkey (default `Cmd+Shift+A`) with drag → anchor-adjust → Enter/double-click confirm + ESC cancel
+- Full-screen capture via configurable hotkey (default `Cmd+Shift+S`) — cursor's monitor, clipboard + optional notification
 - Menu-bar tray icon with Capture Region / Capture Screen / Quit
+- Configurable save-to-disk with templated filenames (`~/.config/quickshot/config.toml`)
+- macOS autostart via `quickshot --install-autostart` / `--uninstall-autostart`
 - Live W × H size label (physical pixels) and 4× magnifier with crosshair + hex/coord readout during region capture
-- No settings window / file saving yet (Iter 3)
 - No cross-screen selection
 
-Release binary size on this machine: 1.2M.
-Dominant contributors: std (40.7% of .text), image crate (13.0%), winit (10.6%).
+Release binary size on this machine: 1.4M.
+
+## Config
+
+On first run, quickshot writes `~/.config/quickshot/config.toml` with defaults. Edit and restart to apply changes.
+
+```toml
+[hotkey]
+region = "Cmd+Shift+A"
+fullscreen = "Cmd+Shift+S"
+
+[save]
+enabled = false
+directory = "~/Desktop"
+filename_template = "Screenshot_{datetime}.png"
+
+[general]
+notification_on_fullscreen = true
+```
+
+Filename template placeholders: `{date}` `{time}` `{datetime}` `{w}` `{h}` `{mode}`.
+
+## Autostart (macOS)
+
+    quickshot --install-autostart      # installs LaunchAgent + launches at login
+    quickshot --uninstall-autostart    # removes it
