@@ -31,6 +31,7 @@ pub struct Overlay {
     pub(crate) state: OverlayState,
     pub(crate) cursor: (i32, i32),
     last_click: Option<std::time::Instant>,
+    last_redraw: Option<std::time::Instant>,
     font: crate::text::Font,
 }
 
@@ -94,6 +95,7 @@ impl Overlay {
             state: OverlayState::Idle,
             cursor: (0, 0),
             last_click: None,
+            last_redraw: None,
             font: crate::text::Font::embedded(),
         })
     }
@@ -107,19 +109,20 @@ impl Overlay {
                 match self.state {
                     OverlayState::Dragging { start, .. } => {
                         self.state = state::on_mouse_move_dragging(start, self.cursor);
-                        self.window.request_redraw();
+                        self.request_redraw_throttled();
                     }
                     OverlayState::Adjusting { edit: Some(_), .. } => {
                         self.state = state::update_edit(self.state, self.cursor);
-                        self.window.request_redraw();
+                        self.request_redraw_throttled();
                     }
                     OverlayState::Adjusting { rect, edit: None } => {
+                        // No redraw needed — just update the cursor icon.
                         let icon = hit::cursor_icon_for(hit::classify(self.cursor, rect));
                         self.window.set_cursor(icon);
                     }
                     OverlayState::Idle => {
-                        // Magnifier must follow cursor while idle.
-                        self.window.request_redraw();
+                        // Magnifier follows cursor while idle; throttle to ~60 Hz.
+                        self.request_redraw_throttled();
                     }
                 }
                 Outcome::Continue
@@ -328,6 +331,21 @@ impl Overlay {
         Ok(())
     }
 
+    /// Throttle redraws to ~60 Hz (~16 ms between frames) to avoid wasting
+    /// work on mouse events that arrive faster than the display can refresh.
+    /// Missed redraws are intentionally dropped (winit coalesces request_redraw
+    /// calls anyway, so no frame is "lost" — we simply skip redundant work).
+    fn request_redraw_throttled(&mut self) {
+        let now = std::time::Instant::now();
+        let should = self.last_redraw.is_none_or(|t| {
+            now.duration_since(t) >= std::time::Duration::from_millis(16)
+        });
+        if should {
+            self.last_redraw = Some(now);
+            self.window.request_redraw();
+        }
+    }
+
 }
 
 /// Set the NSWindow level via raw Objective-C message send.
@@ -354,12 +372,12 @@ fn set_macos_window_level(window: &Window, level: i64) {
         // appkit.ns_view is a NonNull<c_void> pointing to the NSView.
         // We send [[[nsView window] setLevel:level] to set the NSWindow level.
         let ns_view = appkit.ns_view.as_ptr();
-        let sel_window = sel_registerName(b"window\0".as_ptr());
+        let sel_window = sel_registerName(c"window".as_ptr().cast());
         let ns_window = objc_msgSend(ns_view, sel_window);
         if ns_window.is_null() {
             return;
         }
-        let sel_set_level = sel_registerName(b"setLevel:\0".as_ptr());
+        let sel_set_level = sel_registerName(c"setLevel:".as_ptr().cast());
         objc_msgSend(ns_window, sel_set_level, level);
     }
 }

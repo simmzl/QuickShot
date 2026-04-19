@@ -27,19 +27,20 @@ impl Font {
         ch: char,
         px_size: f32,
     ) -> Option<&(fontdue::Metrics, Vec<u8>)> {
+        // Extract `font` before mutably borrowing `self.cache`; split borrows
+        // ensure these are distinct fields and satisfy the borrow checker.
         let font = self.inner.as_ref()?;
         let key = (ch, (px_size * 10.0) as u32);
-        if !self.cache.contains_key(&key) {
-            let (metrics, bitmap) = font.rasterize(ch, px_size);
-            self.cache.insert(key, (metrics, bitmap));
-        }
-        self.cache.get(&key)
+        Some(self.cache.entry(key).or_insert_with(|| font.rasterize(ch, px_size)))
     }
 
     /// Draw `text` into the softbuffer `buf` (0x00RRGGBB per pixel) at pen
     /// position (x, y) = baseline *top-left* in pixels. `color_rgb` is the
     /// foreground color; alpha is taken from the glyph coverage and blended
     /// over whatever is already in `buf`.
+    // All arguments are primitives needed by the hot-path inner loop; grouping
+    // them into a struct would add allocation/indirection with no clarity gain.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_text(
         &mut self,
         buf: &mut [u32],
@@ -55,9 +56,9 @@ impl Font {
             return;
         }
         let (fr, fg, fb) = (
-            ((color_rgb >> 16) & 0xFF) as u32,
-            ((color_rgb >> 8) & 0xFF) as u32,
-            (color_rgb & 0xFF) as u32,
+            (color_rgb >> 16) & 0xFF,
+            (color_rgb >> 8) & 0xFF,
+            color_rgb & 0xFF,
         );
         let mut pen_x = x as f32;
         for ch in text.chars() {
@@ -76,6 +77,9 @@ impl Font {
     }
 }
 
+// All arguments are primitives for a tight pixel-blending loop; a struct
+// wrapper would hurt readability here without any shared type that makes sense.
+#[allow(clippy::too_many_arguments)]
 fn blit_glyph(
     buf: &mut [u32],
     w: u32,

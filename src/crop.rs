@@ -1,5 +1,7 @@
 use image::RgbaImage;
 
+// Used in tests; may be called by future callers (e.g. a Linux/Windows capture path).
+#[allow(dead_code)]
 pub fn normalize_rect(
     start: (i32, i32),
     end: (i32, i32),

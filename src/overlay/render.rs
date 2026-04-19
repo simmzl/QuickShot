@@ -149,6 +149,9 @@ fn estimate_text_width(text: &str, px_size: f32) -> i32 {
 
 /// Filled rect with alpha-blended solid color and squared corners masked into
 /// a 4-px rounded pill.
+// All args are primitives for a pixel-blending inner loop; no shared struct
+// type exists that would aid clarity over just listing the parameters.
+#[allow(clippy::too_many_arguments)]
 fn draw_rounded_rect_alpha(
     buf: &mut [u32],
     w: u32,
