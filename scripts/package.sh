@@ -93,5 +93,32 @@ echo "==> codesigning with identity: $SIGN_IDENTITY"
 codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
 codesign --verify --verbose=2 "$APP"
 
+# --- DMG -------------------------------------------------------------------
+DMG="dist/quickshot-$VERSION.dmg"
 echo ""
-ls -lh "$APP/Contents/MacOS/quickshot" | awk '{print "    binary:", $5}'
+echo "==> creating $DMG"
+rm -f "$DMG"
+
+STAGING="dist/dmg-staging"
+rm -rf "$STAGING"
+mkdir -p "$STAGING"
+cp -R "$APP" "$STAGING/"
+ln -s /Applications "$STAGING/Applications"
+
+hdiutil create \
+    -volname "quickshot" \
+    -srcfolder "$STAGING" \
+    -ov \
+    -format UDZO \
+    "$DMG" >/dev/null
+
+rm -rf "$STAGING"
+
+# --- cleanup ---------------------------------------------------------------
+rm -f dist/quickshot-universal dist/quickshot.icns
+
+# --- report ----------------------------------------------------------------
+echo ""
+echo "done:"
+echo "  $APP"
+echo "  $DMG  ($(du -h "$DMG" | cut -f1))"
