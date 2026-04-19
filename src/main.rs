@@ -5,6 +5,7 @@ mod crop;
 mod hotkey;
 mod overlay;
 mod permission;
+mod text;
 
 use anyhow::Result;
 use winit::event_loop::EventLoop;

@@ -1,5 +1,7 @@
 use image::RgbaImage;
 
+// No non-test caller yet; retained for a future platform capture path.
+#[allow(dead_code)]
 pub fn normalize_rect(
     start: (i32, i32),
     end: (i32, i32),

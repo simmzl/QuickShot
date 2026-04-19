@@ -8,6 +8,7 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 anyhow = "1"
 arboard = "3.4"
+fontdue = "0.9"
 global-hotkey = "0.6"
 image = { version = "0.25", default-features = false, features = ["png"] }
 softbuffer = "0.4"

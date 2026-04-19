@@ -1,13 +1,13 @@
 use anyhow::Result;
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::WindowId;
 
 use crate::capture;
 use crate::clipboard;
 use crate::crop;
-use crate::overlay::Overlay;
+use crate::overlay::{state::Rect, Outcome, Overlay};
 
 #[derive(Debug, Clone)]
 pub enum UserEvent {
@@ -16,15 +16,11 @@ pub enum UserEvent {
 
 pub struct App {
     overlay: Option<Overlay>,
-    cursor: (i32, i32),
 }
 
 impl App {
     pub fn new() -> Self {
-        Self {
-            overlay: None,
-            cursor: (0, 0),
-        }
+        Self { overlay: None }
     }
 
     fn open_overlay(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
@@ -38,31 +34,22 @@ impl App {
         Ok(())
     }
 
-    fn finish_selection(&mut self) {
+    fn confirm(&mut self, rect: Rect) {
         let Some(overlay) = self.overlay.take() else {
             return;
         };
-        let Some(win_rect) = overlay.current_window_rect() else {
-            // Zero-area selection — just close overlay without copying.
-            Self::close_overlay(overlay);
-            return;
-        };
-        let frame_rect = overlay.window_rect_to_frame_rect(win_rect);
+        let frame_rect = overlay.window_rect_to_frame_rect(rect);
         let cropped = crop::crop_rgba(&overlay.frame, frame_rect);
         if let Err(e) = clipboard::put_image(&cropped) {
             eprintln!("clipboard error: {e:?}");
         } else {
-            println!(
-                "copied {}x{} to clipboard",
-                cropped.width(),
-                cropped.height()
-            );
+            println!("copied {}x{} to clipboard", cropped.width(), cropped.height());
         }
-        Self::close_overlay(overlay);
+        drop(overlay);
     }
 
-    fn close_overlay(overlay: Overlay) {
-        drop(overlay);
+    fn cancel(&mut self) {
+        self.overlay = None;
     }
 }
 
@@ -70,8 +57,6 @@ impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, _event_loop: &ActiveEventLoop) {}
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // Keep the event loop alive even when no windows exist,
-        // so global hotkey events are still processed.
         event_loop.set_control_flow(ControlFlow::Wait);
     }
 
@@ -87,40 +72,10 @@ impl ApplicationHandler<UserEvent> for App {
         if overlay.window.id() != id {
             return;
         }
-        match event {
-            WindowEvent::CloseRequested => {
-                self.overlay = None;
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = (position.x as i32, position.y as i32);
-                if overlay.drag_start.is_some() {
-                    overlay.drag_end = Some(self.cursor);
-                    overlay.window.request_redraw();
-                }
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                overlay.drag_start = Some(self.cursor);
-                overlay.drag_end = Some(self.cursor);
-                overlay.window.request_redraw();
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                overlay.drag_end = Some(self.cursor);
-                self.finish_selection();
-            }
-            WindowEvent::RedrawRequested => {
-                if let Err(e) = overlay.redraw() {
-                    eprintln!("redraw error: {e:?}");
-                }
-            }
-            _ => {}
+        match overlay.handle_event(event) {
+            Outcome::Continue => {}
+            Outcome::Confirmed(rect) => self.confirm(rect),
+            Outcome::Cancelled => self.cancel(),
         }
     }
 
