@@ -20,20 +20,24 @@ const ID_SCREEN: &str = "capture-screen";
 const ID_QUIT: &str = "quit";
 
 /// Install the menu-bar tray icon and spawn the menu-event forwarder.
-pub fn install(proxy: EventLoopProxy<UserEvent>) -> Result<TrayGuard> {
+pub fn install(
+    proxy: EventLoopProxy<UserEvent>,
+    region_label: &str,
+    screen_label: &str,
+) -> Result<TrayGuard> {
     let icon = load_icon()?;
     let menu = Menu::new();
 
     menu.append(&MenuItem::with_id(
         ID_REGION,
-        "Capture Region    \u{2318}\u{21E7}A",
+        format!("Capture Region    {region_label}"),
         true,
         None,
     ))
     .context("append Capture Region menu item")?;
     menu.append(&MenuItem::with_id(
         ID_SCREEN,
-        "Capture Screen    \u{2318}\u{21E7}S",
+        format!("Capture Screen    {screen_label}"),
         true,
         None,
     ))

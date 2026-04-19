@@ -14,7 +14,8 @@ Binary lands at `target/release/quickshot`.
 
 Press `Cmd+Shift+A` (region) or `Cmd+Shift+S` (full screen) to capture. The
 screenshot is placed on your clipboard; full-screen captures also show a
-system notification.
+system notification by default (toggle `notification_on_fullscreen` in the
+config).
 
 Quit via the menu-bar tray icon → Quit, or Ctrl+C in the launching terminal.
 

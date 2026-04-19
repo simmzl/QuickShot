@@ -47,7 +47,11 @@ fn main() -> Result<()> {
         config.hotkey.region.clone(),
         config.hotkey.fullscreen.clone(),
     )?;
-    let _tray_guard = tray::install(proxy.clone())?;
+    let _tray_guard = tray::install(
+        proxy.clone(),
+        &config.hotkey.region.raw,
+        &config.hotkey.fullscreen.raw,
+    )?;
 
     println!(
         "quickshot running; {} (region), {} (fullscreen). Quit via tray or Ctrl+C.",

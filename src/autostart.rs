@@ -122,6 +122,9 @@ mod tests {
         assert!(out.contains("com.quickshot.daemon"));
         assert!(out.contains("<key>RunAtLoad</key>"));
         assert!(out.contains("<true/>"));
+        assert!(out.contains("<key>KeepAlive</key>"));
+        // The <true/> assertion above matches RunAtLoad's <true/>; verify <false/> also present for KeepAlive.
+        assert!(out.contains("<false/>"));
     }
 
     #[test]
