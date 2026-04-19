@@ -56,6 +56,30 @@ impl App {
     fn cancel(&mut self) {
         self.overlay = None;
     }
+
+    fn capture_full_screen(&mut self) {
+        // If the region overlay is open, ignore the full-screen request so we
+        // don't steal the monitor while the user is mid-selection.
+        if self.overlay.is_some() {
+            return;
+        }
+        match capture::capture_at_cursor() {
+            Ok((frame, _geom)) => {
+                let (w, h) = frame.dimensions();
+                if let Err(e) = clipboard::put_image(&frame) {
+                    eprintln!("clipboard error: {e:?}");
+                    return;
+                }
+                println!("copied {}x{} (full screen) to clipboard", w, h);
+                if let Err(e) = crate::notification::screenshot_copied(w, h) {
+                    eprintln!("notification error: {e:?}");
+                }
+            }
+            Err(e) => {
+                eprintln!("capture error: {e:?}");
+            }
+        }
+    }
 }
 
 impl ApplicationHandler<UserEvent> for App {
@@ -92,8 +116,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             UserEvent::CaptureScreen => {
-                // Filled in by Task 4.
-                eprintln!("capture screen (stub) — wired up in Task 4");
+                self.capture_full_screen();
             }
             UserEvent::Quit => {
                 // Filled in by Task 5 (after tray is installed; Task 5 replaces this stub
