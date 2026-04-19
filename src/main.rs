@@ -3,6 +3,7 @@ mod capture;
 mod clipboard;
 mod config;
 mod crop;
+mod file_save;
 mod hotkey;
 mod notification;
 mod overlay;
