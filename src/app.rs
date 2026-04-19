@@ -21,8 +21,6 @@ pub enum UserEvent {
 
 pub struct App {
     overlay: Option<Overlay>,
-    // Task 5 will read config when wiring file save into confirm/capture_full_screen.
-    #[allow(dead_code)]
     config: crate::config::Config,
 }
 
@@ -51,10 +49,24 @@ impl App {
         };
         let frame_rect = overlay.window_rect_to_frame_rect(rect);
         let cropped = crop::crop_rgba(&overlay.frame, frame_rect);
-        if let Err(e) = clipboard::put_image(&cropped) {
-            eprintln!("clipboard error: {e:?}");
-        } else {
-            println!("copied {}x{} to clipboard", cropped.width(), cropped.height());
+        match clipboard::put_image(&cropped) {
+            Ok(()) => {
+                println!("copied {}x{} to clipboard", cropped.width(), cropped.height());
+                if self.config.save.enabled {
+                    match crate::file_save::save_png(
+                        &cropped,
+                        &self.config.save.directory,
+                        &self.config.save.filename_template,
+                        crate::file_save::CaptureMode::Region,
+                    ) {
+                        Ok(path) => println!("saved → {}", path.display()),
+                        Err(e) => eprintln!("save error: {e:?}"),
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("clipboard error: {e:?}");
+            }
         }
         drop(overlay);
     }
@@ -77,8 +89,21 @@ impl App {
                     return;
                 }
                 println!("copied {}x{} (full screen) to clipboard", w, h);
-                if let Err(e) = crate::notification::screenshot_copied(w, h) {
-                    eprintln!("notification error: {e:?}");
+                if self.config.save.enabled {
+                    match crate::file_save::save_png(
+                        &frame,
+                        &self.config.save.directory,
+                        &self.config.save.filename_template,
+                        crate::file_save::CaptureMode::Fullscreen,
+                    ) {
+                        Ok(path) => println!("saved → {}", path.display()),
+                        Err(e) => eprintln!("save error: {e:?}"),
+                    }
+                }
+                if self.config.general.notification_on_fullscreen {
+                    if let Err(e) = crate::notification::screenshot_copied(w, h) {
+                        eprintln!("notification error: {e:?}");
+                    }
                 }
             }
             Err(e) => {
