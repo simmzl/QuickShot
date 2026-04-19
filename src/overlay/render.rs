@@ -143,6 +143,9 @@ pub fn draw_size_label(
 /// Rough width estimate for monospace: each glyph is ~`0.6 * px_size` wide.
 /// Used only for laying out the background pill; the text renderer handles
 /// real advance widths.
+/// TODO Iter 2b: the 0.6 multiplier has no safety margin for wide strings;
+/// raise to ~0.65 or switch to a real advance-width query via fontdue metrics
+/// if labels visibly overhang.
 fn estimate_text_width(text: &str, px_size: f32) -> i32 {
     (text.chars().count() as f32 * px_size * 0.6).ceil() as i32
 }

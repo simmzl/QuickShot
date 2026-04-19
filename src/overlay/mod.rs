@@ -331,10 +331,11 @@ impl Overlay {
         Ok(())
     }
 
-    /// Throttle redraws to ~60 Hz (~16 ms between frames) to avoid wasting
-    /// work on mouse events that arrive faster than the display can refresh.
-    /// Missed redraws are intentionally dropped (winit coalesces request_redraw
-    /// calls anyway, so no frame is "lost" — we simply skip redundant work).
+    /// Request a redraw at most once per ~16 ms (~60 Hz). Missed requests are
+    /// dropped rather than queued — the state update that preceded the call
+    /// has already landed, so the next un-throttled redraw will paint the
+    /// latest state. Winit additionally coalesces concurrent request_redraw
+    /// calls within a single frame, so no visible frame is lost.
     fn request_redraw_throttled(&mut self) {
         let now = std::time::Instant::now();
         let should = self.last_redraw.is_none_or(|t| {
