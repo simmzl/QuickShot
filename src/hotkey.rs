@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use global_hotkey::{
     hotkey::{Code, HotKey, Modifiers},
-    GlobalHotKeyEvent, GlobalHotKeyManager,
+    GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
 };
 use std::thread;
 use std::time::Duration;
@@ -34,6 +34,9 @@ pub fn register(proxy: EventLoopProxy<UserEvent>) -> Result<HotkeyGuard> {
     let receiver = GlobalHotKeyEvent::receiver();
     thread::spawn(move || loop {
         if let Ok(event) = receiver.try_recv() {
+            if event.state != HotKeyState::Pressed {
+                continue;
+            }
             let msg = if event.id == region_id {
                 Some(UserEvent::CaptureRegion)
             } else if event.id == screen_id {

@@ -12,9 +12,11 @@ Binary lands at `target/release/quickshot`.
 
     ./target/release/quickshot
 
-Press `Ctrl/Cmd+Shift+A`, drag a region, release — the PNG is now on your clipboard.
+Press `Cmd+Shift+A` (region) or `Cmd+Shift+S` (full screen) to capture. The
+screenshot is placed on your clipboard; full-screen captures also show a
+system notification.
 
-Quit with Ctrl+C in the launching terminal.
+Quit via the menu-bar tray icon → Quit, or Ctrl+C in the launching terminal.
 
 ## macOS first run
 
@@ -22,6 +24,11 @@ The daemon requires Screen Recording permission. On first launch it will
 detect the missing permission and print a guided prompt pointing you to
 System Settings → Privacy & Security → Screen Recording. After granting,
 relaunch.
+
+On the first full-screen capture (`Cmd+Shift+S`), macOS may also prompt for
+notification permission ("quickshot wants to send you notifications"). Allow
+it so successful captures can show a confirmation banner. Subsequent
+captures are silent in terms of prompts.
 
 ## Status (Iter 2b)
 
