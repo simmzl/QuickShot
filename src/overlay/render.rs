@@ -236,8 +236,8 @@ pub fn draw_selection_outline(
 const MAG_SIZE: i32 = 120;
 const MAG_ZOOM: i32 = 4;
 const MAG_OFFSET: i32 = 20;
-const MAG_LABEL_H: i32 = 18;
-const MAG_FONT_PX: f32 = 11.0;
+const MAG_LABEL_H: i32 = 24;
+const MAG_FONT_PX: f32 = 14.0;
 
 /// Decide where to put the magnifier given cursor + window size.
 /// Default: bottom-right of cursor with a gap. Flip to the opposite side

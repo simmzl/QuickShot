@@ -66,6 +66,9 @@ impl Overlay {
             // kCGScreenSaverWindowLevel = 1000, kCGMainMenuWindowLevel = 24.
             // We use 1000 to be above everything.
             set_macos_window_level(&win, 1000);
+            // Without this, ESC/Enter before the first mouse click are dropped
+            // because the borderless level-1000 window isn't automatically key.
+            make_macos_key_window(&win);
             win
         };
 
@@ -80,7 +83,9 @@ impl Overlay {
                 .with_decorations(false)
                 .with_resizable(false)
                 .with_fullscreen(Some(winit::window::Fullscreen::Borderless(target_monitor)));
-            event_loop.create_window(attrs).context("create window")?
+            let win = event_loop.create_window(attrs).context("create window")?;
+            win.focus_window();
+            win
         };
 
         let window = Rc::new(window);
@@ -347,6 +352,40 @@ impl Overlay {
         }
     }
 
+}
+
+/// Promote the NSWindow to key-and-main so it receives keyboard events.
+/// Without this, a borderless+level-1000 window doesn't auto-focus on creation,
+/// and ESC/Enter before the first click are dropped.
+#[cfg(target_os = "macos")]
+fn make_macos_key_window(window: &Window) {
+    use winit::raw_window_handle::HasWindowHandle;
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let raw = handle.as_raw();
+    let winit::raw_window_handle::RawWindowHandle::AppKit(appkit) = raw else {
+        return;
+    };
+    extern "C" {
+        fn objc_msgSend(
+            obj: *mut std::ffi::c_void,
+            sel: *mut std::ffi::c_void,
+            ...
+        ) -> *mut std::ffi::c_void;
+        fn sel_registerName(name: *const u8) -> *mut std::ffi::c_void;
+    }
+    unsafe {
+        let ns_view = appkit.ns_view.as_ptr();
+        let sel_window = sel_registerName(c"window".as_ptr().cast());
+        let ns_window = objc_msgSend(ns_view, sel_window);
+        if ns_window.is_null() {
+            return;
+        }
+        let sel_make_key = sel_registerName(c"makeKeyAndOrderFront:".as_ptr().cast());
+        // nil argument (selector takes an id sender; we pass null).
+        objc_msgSend(ns_window, sel_make_key, std::ptr::null_mut::<std::ffi::c_void>());
+    }
 }
 
 /// Set the NSWindow level via raw Objective-C message send.
