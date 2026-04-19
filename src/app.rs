@@ -21,11 +21,17 @@ pub enum UserEvent {
 
 pub struct App {
     overlay: Option<Overlay>,
+    // Task 5 will read config when wiring file save into confirm/capture_full_screen.
+    #[allow(dead_code)]
+    config: crate::config::Config,
 }
 
 impl App {
-    pub fn new() -> Self {
-        Self { overlay: None }
+    pub fn new(config: crate::config::Config) -> Self {
+        Self {
+            overlay: None,
+            config,
+        }
     }
 
     fn open_overlay(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {

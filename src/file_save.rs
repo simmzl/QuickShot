@@ -1,5 +1,10 @@
 //! Write captured frames to disk with templated filenames.
 
+// Task 5 will wire save_png / CaptureMode / TemplateContext / interpolate /
+// uniquify into App::confirm / App::capture_full_screen.  Until then suppress
+// dead-code lints so clippy stays clean.
+#![allow(dead_code)]
+
 use anyhow::{Context, Result};
 use image::RgbaImage;
 use std::fs;

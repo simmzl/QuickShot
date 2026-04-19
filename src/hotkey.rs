@@ -1,13 +1,12 @@
 use anyhow::{Context, Result};
-use global_hotkey::{
-    hotkey::{Code, HotKey, Modifiers},
-    GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState,
-};
+use global_hotkey::hotkey::HotKey;
+use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use std::thread;
 use std::time::Duration;
 use winit::event_loop::EventLoopProxy;
 
 use crate::app::UserEvent;
+use crate::config::ParsedHotkey;
 
 /// Keep the manager alive for the program's lifetime.
 /// Dropping it unregisters both hotkeys.
@@ -15,18 +14,21 @@ pub struct HotkeyGuard {
     _manager: GlobalHotKeyManager,
 }
 
-pub fn register(proxy: EventLoopProxy<UserEvent>) -> Result<HotkeyGuard> {
+pub fn register(
+    proxy: EventLoopProxy<UserEvent>,
+    region: ParsedHotkey,
+    fullscreen: ParsedHotkey,
+) -> Result<HotkeyGuard> {
     let manager = GlobalHotKeyManager::new().context("new GlobalHotKeyManager")?;
 
-    #[cfg(target_os = "macos")]
-    let mods = Modifiers::META | Modifiers::SHIFT;
-    #[cfg(not(target_os = "macos"))]
-    let mods = Modifiers::CONTROL | Modifiers::SHIFT;
-
-    let hk_region = HotKey::new(Some(mods), Code::KeyA);
-    let hk_screen = HotKey::new(Some(mods), Code::KeyS);
-    manager.register(hk_region).context("register region hotkey")?;
-    manager.register(hk_screen).context("register screen hotkey")?;
+    let hk_region = HotKey::new(Some(region.modifiers), region.code);
+    let hk_screen = HotKey::new(Some(fullscreen.modifiers), fullscreen.code);
+    manager
+        .register(hk_region)
+        .with_context(|| format!("register region hotkey {}", region.raw))?;
+    manager
+        .register(hk_screen)
+        .with_context(|| format!("register fullscreen hotkey {}", fullscreen.raw))?;
 
     let region_id = hk_region.id();
     let screen_id = hk_screen.id();
