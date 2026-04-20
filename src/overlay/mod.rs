@@ -129,6 +129,17 @@ impl Overlay {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x as i32, position.y as i32);
+
+                // If a PendingDraw is in flight, update its endpoint.
+                if self.pending_draw.is_some() {
+                    let fp = self.window_point_to_frame_point(self.cursor);
+                    if let Some(p) = self.pending_draw.as_mut() {
+                        p.to_frame = fp;
+                    }
+                    self.request_redraw_throttled();
+                    return Outcome::Continue;
+                }
+
                 match self.state {
                     OverlayState::Dragging { start, .. } => {
                         self.state = state::on_mouse_move_dragging(start, self.cursor);
@@ -209,6 +220,48 @@ impl Overlay {
                         Transition::Stay => {}
                     }
                 }
+
+                // Toolbar click takes priority over everything else.
+                let win_size = self.window.inner_size();
+                let tb = toolbar::Toolbar::layout(rect, (win_size.width, win_size.height));
+                match tb.hit(self.cursor) {
+                    toolbar::ToolbarHit::Tool(t) => {
+                        self.pending_draw = None;
+                        if let OverlayState::Adjusting { rect: r, .. } = self.state {
+                            self.state = OverlayState::Adjusting { rect: r, edit: None };
+                        }
+                        self.tool = t;
+                        self.window.request_redraw();
+                        return Outcome::Continue;
+                    }
+                    toolbar::ToolbarHit::Undo => {
+                        if self.history.undo() {
+                            self.window.request_redraw();
+                        }
+                        return Outcome::Continue;
+                    }
+                    toolbar::ToolbarHit::Redo => {
+                        if self.history.redo() {
+                            self.window.request_redraw();
+                        }
+                        return Outcome::Continue;
+                    }
+                    toolbar::ToolbarHit::None => {}
+                }
+
+                // Drawing tool + click inside selection → start PendingDraw.
+                if self.tool.is_drawing() && rect.contains(self.cursor) {
+                    let fp = self.window_point_to_frame_point(self.cursor);
+                    self.pending_draw = Some(PendingDraw {
+                        tool: self.tool,
+                        from_frame: fp,
+                        to_frame: fp,
+                    });
+                    self.window.request_redraw();
+                    return Outcome::Continue;
+                }
+
+                // Move tool: existing Iter 2a behavior (anchor resize / translate / clear).
                 match hit::classify(self.cursor, rect) {
                     hit::HitZone::Anchor(a) => {
                         self.state = state::start_resize(rect, a, self.cursor);
@@ -229,6 +282,15 @@ impl Overlay {
     }
 
     fn handle_left_release(&mut self) -> Outcome {
+        // Commit an in-flight annotation draw first.
+        if let Some(pending) = self.pending_draw.take() {
+            if let Some(ann) = pending.finalize() {
+                self.history.push(ann);
+            }
+            self.window.request_redraw();
+            return Outcome::Continue;
+        }
+
         match self.state {
             OverlayState::Dragging { start, end } => {
                 let rect = Rect::normalize(start, end);
@@ -317,6 +379,15 @@ impl Overlay {
 
     fn current_selection_rect_window(&self) -> Option<(u32, u32, u32, u32)> {
         self.current_selection_rect().map(|r| r.as_tuple_u32())
+    }
+
+    fn window_point_to_frame_point(&self, p: (i32, i32)) -> (i32, i32) {
+        let size = self.window.inner_size();
+        let (ww, wh) = (size.width.max(1) as i64, size.height.max(1) as i64);
+        let (fw, fh) = self.frame.dimensions();
+        let x = (p.0 as i64 * fw as i64 / ww) as i32;
+        let y = (p.1 as i64 * fh as i64 / wh) as i32;
+        (x, y)
     }
 
     /// Translate a window-space rect into a frame-space rect.
