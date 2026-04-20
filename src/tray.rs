@@ -76,9 +76,13 @@ pub fn install(
     menu.append(&MenuItem::with_id(ID_QUIT, "Quit", true, None))
         .context("append Quit menu item")?;
 
+    // Template image: macOS auto-inverts non-transparent pixels based on
+    // menu-bar theme (black in light mode, white in dark mode). This is how
+    // system tray icons (WiFi, battery, etc.) stay visible in both themes.
     let tray = TrayIconBuilder::new()
         .with_tooltip("quickshot")
         .with_icon(icon)
+        .with_icon_as_template(true)
         .with_menu(Box::new(menu))
         .build()
         .context("build tray icon")?;
