@@ -121,8 +121,27 @@ pub fn draw_arrow_on_image(
         return;
     }
     let (w, h) = (img.width() as i32, img.height() as i32);
-    draw_line_thick(img, from, to, color, thickness, w, h);
+    // Stop the shaft at the arrowhead's base so it doesn't poke past the tip.
+    let shaft_end = shaft_end_point(from, to, ARROWHEAD_LEN as f64);
+    draw_line_thick(img, from, shaft_end, color, thickness, w, h);
     draw_arrowhead(img, from, to, color, w, h);
+}
+
+/// Given a line from `from` to `to` (the tip) and `head_len` arrowhead length,
+/// returns the point where the shaft should end (the arrowhead's base).
+/// If the arrow is shorter than the head, returns `from` (no visible shaft).
+fn shaft_end_point(from: (i32, i32), to: (i32, i32), head_len: f64) -> (i32, i32) {
+    let (fx, fy) = (from.0 as f64, from.1 as f64);
+    let (tx, ty) = (to.0 as f64, to.1 as f64);
+    let dx = tx - fx;
+    let dy = ty - fy;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= head_len {
+        return from;
+    }
+    let ux = dx / len;
+    let uy = dy / len;
+    ((tx - ux * head_len) as i32, (ty - uy * head_len) as i32)
 }
 
 fn draw_line_thick(
@@ -178,7 +197,7 @@ fn draw_arrowhead(img: &mut RgbaImage, from: (i32, i32), to: (i32, i32), color: 
     let base_y = ty - uy * ARROWHEAD_LEN as f64;
     let px = -uy;
     let py = ux;
-    let half_w = ARROWHEAD_LEN as f64 * 0.28;
+    let half_w = ARROWHEAD_LEN as f64 * 0.577; // 60° tip: half-angle 30° → tan(30°)
     let a = (base_x + px * half_w, base_y + py * half_w);
     let b = (base_x - px * half_w, base_y - py * half_w);
     let tip = (tx, ty);
@@ -312,7 +331,8 @@ pub fn draw_annotation_on_buf(
         Annotation::Arrow { from, to } => {
             let f = frame_to_window(from, frame_size, window_size);
             let t = frame_to_window(to, frame_size, window_size);
-            draw_line_thick_buf(buf, win_w, win_h, f, t, color_argb, thickness_win);
+            let shaft_end = shaft_end_point(f, t, ARROWHEAD_LEN as f64);
+            draw_line_thick_buf(buf, win_w, win_h, f, shaft_end, color_argb, thickness_win);
             draw_arrowhead_buf(buf, win_w, win_h, f, t, color_argb);
         }
         Annotation::Rect { rect } => {
@@ -418,7 +438,7 @@ fn draw_arrowhead_buf(
     let base_y = ty - uy * ARROWHEAD_LEN as f64;
     let px = -uy;
     let py = ux;
-    let half_w = ARROWHEAD_LEN as f64 * 0.28;
+    let half_w = ARROWHEAD_LEN as f64 * 0.577; // 60° tip: half-angle 30° → tan(30°)
     let a = (base_x + px * half_w, base_y + py * half_w);
     let b = (base_x - px * half_w, base_y - py * half_w);
     let tip = (tx, ty);
