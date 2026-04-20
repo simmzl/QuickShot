@@ -47,25 +47,20 @@ fn main() -> Result<()> {
         config.hotkey.region.clone(),
         config.hotkey.fullscreen.clone(),
     )?;
-    let _tray_guard = tray::install(
-        proxy.clone(),
-        &config.hotkey.region.raw,
-        &config.hotkey.fullscreen.raw,
-    )?;
 
     println!(
-        "quickshot running; {} (region), {} (fullscreen). Quit via tray or Ctrl+C.",
+        "quickshot running; {} (region), {} (fullscreen). Quit via tray.",
         config.hotkey.region.raw, config.hotkey.fullscreen.raw
     );
 
-    let mut app = app::App::new(config);
+    let mut app = app::App::new(config, proxy);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
 
 fn print_usage() {
     println!(
-        "quickshot — small fast screenshot daemon\n\
+        "quickshot \u{2014} small fast screenshot daemon\n\
          \n\
          USAGE:\n\
              quickshot                       run the daemon (default)\n\

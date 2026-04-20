@@ -1,13 +1,14 @@
 use anyhow::Result;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, ControlFlow};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::window::WindowId;
 
 use crate::capture;
 use crate::clipboard;
 use crate::crop;
 use crate::overlay::{state::Rect, Outcome, Overlay};
+use crate::tray::TrayGuard;
 
 #[derive(Debug, Clone, Copy)]
 pub enum UserEvent {
@@ -15,6 +16,10 @@ pub enum UserEvent {
     CaptureRegion,
     /// `Cmd/Ctrl+Shift+S` pressed, or "Capture Screen" menu item clicked.
     CaptureScreen,
+    /// "Edit Config\u{2026}" menu item clicked — opens the config.toml in default editor.
+    EditConfig,
+    /// "Start at Login" check item clicked — toggles autostart install/uninstall.
+    ToggleAutostart,
     /// "Quit" menu item clicked.
     Quit,
 }
@@ -22,13 +27,26 @@ pub enum UserEvent {
 pub struct App {
     overlay: Option<Overlay>,
     config: crate::config::Config,
+    proxy: EventLoopProxy<UserEvent>,
+    region_label: String,
+    fullscreen_label: String,
+    tray: Option<TrayGuard>,
 }
 
 impl App {
-    pub fn new(config: crate::config::Config) -> Self {
+    pub fn new(
+        config: crate::config::Config,
+        proxy: EventLoopProxy<UserEvent>,
+    ) -> Self {
+        let region_label = config.hotkey.region.raw.clone();
+        let fullscreen_label = config.hotkey.fullscreen.raw.clone();
         Self {
             overlay: None,
             config,
+            proxy,
+            region_label,
+            fullscreen_label,
+            tray: None,
         }
     }
 
@@ -59,7 +77,7 @@ impl App {
                         &self.config.save.filename_template,
                         crate::file_save::CaptureMode::Region,
                     ) {
-                        Ok(path) => println!("saved → {}", path.display()),
+                        Ok(path) => println!("saved \u{2192} {}", path.display()),
                         Err(e) => eprintln!("save error: {e:?}"),
                     }
                 }
@@ -76,8 +94,6 @@ impl App {
     }
 
     fn capture_full_screen(&mut self) {
-        // If the region overlay is open, ignore the full-screen request so we
-        // don't steal the monitor while the user is mid-selection.
         if self.overlay.is_some() {
             return;
         }
@@ -96,7 +112,7 @@ impl App {
                         &self.config.save.filename_template,
                         crate::file_save::CaptureMode::Fullscreen,
                     ) {
-                        Ok(path) => println!("saved → {}", path.display()),
+                        Ok(path) => println!("saved \u{2192} {}", path.display()),
                         Err(e) => eprintln!("save error: {e:?}"),
                     }
                 }
@@ -111,10 +127,65 @@ impl App {
             }
         }
     }
+
+    fn edit_config(&self) {
+        let Some(path) = crate::config::config_path() else {
+            eprintln!("edit config: could not resolve config path");
+            return;
+        };
+        // Ensure the file exists so `open` has something to target — Config::load
+        // writes the default on first run, but if the user wiped ~/.config manually
+        // between launches we may hit a missing file.
+        if !path.exists() {
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&path, crate::config::DEFAULT_TOML);
+        }
+        if let Err(e) = std::process::Command::new("open").arg(&path).spawn() {
+            eprintln!("edit config: could not open {:?}: {e}", path);
+        }
+    }
+
+    fn toggle_autostart(&mut self) {
+        // The CheckMenuItem auto-toggles its check state on click; read the
+        // new state and call install/uninstall accordingly. On failure, revert
+        // the check state so the UI reflects truth.
+        let Some(tray) = self.tray.as_ref() else {
+            return;
+        };
+        let now_checked = tray.autostart_item.is_checked();
+        let result = if now_checked {
+            crate::autostart::install()
+        } else {
+            crate::autostart::uninstall()
+        };
+        if let Err(e) = result {
+            eprintln!("toggle autostart: {e:?}");
+            // Revert the check to reflect actual state
+            tray.autostart_item.set_checked(!now_checked);
+        }
+    }
 }
 
 impl ApplicationHandler<UserEvent> for App {
-    fn resumed(&mut self, _event_loop: &ActiveEventLoop) {}
+    fn resumed(&mut self, _event_loop: &ActiveEventLoop) {
+        // Install tray on first resume — NSApplication is fully active here on
+        // macOS, which is required for tray-icon to register NSStatusBar items
+        // reliably in bundled LSUIElement apps.
+        if self.tray.is_none() {
+            let initial_autostart = crate::autostart::is_installed();
+            match crate::tray::install(
+                self.proxy.clone(),
+                &self.region_label,
+                &self.fullscreen_label,
+                initial_autostart,
+            ) {
+                Ok(guard) => self.tray = Some(guard),
+                Err(e) => eprintln!("tray install error: {e:?}"),
+            }
+        }
+    }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         event_loop.set_control_flow(ControlFlow::Wait);
@@ -148,6 +219,12 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::CaptureScreen => {
                 self.capture_full_screen();
+            }
+            UserEvent::EditConfig => {
+                self.edit_config();
+            }
+            UserEvent::ToggleAutostart => {
+                self.toggle_autostart();
             }
             UserEvent::Quit => {
                 event_loop.exit();

@@ -190,7 +190,7 @@ filename_template = "Screenshot_{datetime}.png"
 notification_on_fullscreen = true
 "#;
 
-fn config_path() -> Option<PathBuf> {
+pub fn config_path() -> Option<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         if !xdg.is_empty() {
             return Some(PathBuf::from(xdg).join("quickshot").join("config.toml"));
