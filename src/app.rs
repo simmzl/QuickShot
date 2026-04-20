@@ -170,12 +170,10 @@ impl App {
 
 impl ApplicationHandler<UserEvent> for App {
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
-        // Install tray on the very first event loop iteration. winit's `resumed`
-        // is tied to applicationDidBecomeActive on macOS, which doesn't fire
-        // for LSUIElement / headless apps that have no initial windows. Using
-        // `new_events(StartCause::Init)` is the pattern tray-icon's own winit
-        // example uses and fires unconditionally on startup.
         if matches!(cause, StartCause::Init) && self.tray.is_none() {
+            eprintln!("quickshot: new_events(Init) — setting NSApp policy and installing tray");
+            #[cfg(target_os = "macos")]
+            set_macos_activation_policy_accessory();
             let initial_autostart = crate::autostart::is_installed();
             match crate::tray::install(
                 self.proxy.clone(),
@@ -183,8 +181,11 @@ impl ApplicationHandler<UserEvent> for App {
                 &self.fullscreen_label,
                 initial_autostart,
             ) {
-                Ok(guard) => self.tray = Some(guard),
-                Err(e) => eprintln!("tray install error: {e:?}"),
+                Ok(guard) => {
+                    eprintln!("quickshot: tray installed OK");
+                    self.tray = Some(guard);
+                }
+                Err(e) => eprintln!("quickshot: tray install error: {e:?}"),
             }
         }
     }
@@ -234,5 +235,38 @@ impl ApplicationHandler<UserEvent> for App {
                 event_loop.exit();
             }
         }
+    }
+}
+
+/// Force NSApplication.activationPolicy = Accessory so the process participates
+/// in AppKit well enough to own an NSStatusBar item. For bundled LSUIElement
+/// apps this is redundant but harmless; for direct-exec CLI it's required.
+#[cfg(target_os = "macos")]
+fn set_macos_activation_policy_accessory() {
+    extern "C" {
+        fn objc_msgSend(
+            obj: *mut std::ffi::c_void,
+            sel: *mut std::ffi::c_void,
+            ...
+        ) -> *mut std::ffi::c_void;
+        fn sel_registerName(name: *const u8) -> *mut std::ffi::c_void;
+        fn objc_getClass(name: *const u8) -> *mut std::ffi::c_void;
+    }
+    unsafe {
+        let ns_app_class = objc_getClass(c"NSApplication".as_ptr().cast());
+        if ns_app_class.is_null() {
+            eprintln!("quickshot: objc_getClass(NSApplication) = null");
+            return;
+        }
+        let sel_shared = sel_registerName(c"sharedApplication".as_ptr().cast());
+        let ns_app = objc_msgSend(ns_app_class, sel_shared);
+        if ns_app.is_null() {
+            eprintln!("quickshot: NSApplication sharedApplication = null");
+            return;
+        }
+        // NSApplicationActivationPolicyAccessory = 1
+        let sel_set_policy = sel_registerName(c"setActivationPolicy:".as_ptr().cast());
+        // Argument passed as i64 (policy enum is NSInteger which is 64-bit on all macOS)
+        objc_msgSend(ns_app, sel_set_policy, 1i64);
     }
 }
