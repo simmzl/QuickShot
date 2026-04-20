@@ -11,12 +11,15 @@ use softbuffer::{Context as SoftContext, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, NamedKey, ModifiersState};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowAttributes};
 
 use crate::capture::MonitorGeom;
 use state::{OverlayState, Rect, Transition};
+use annotate::PendingDraw;
+
+const ANNOTATION_ARGB: u32 = 0x00_FF_3B_30; // #FF3B30 (softbuffer 0x00RRGGBB)
 
 /// What `Overlay::handle_event` reports back to the caller after processing
 /// one winit event. Keeps `app.rs` from needing to inspect `OverlayState`.
@@ -37,6 +40,11 @@ pub struct Overlay {
     last_redraw: Option<std::time::Instant>,
     font: crate::text::Font,
     scale_factor: f32,
+    // Iter 5a: annotation state
+    pub(crate) tool: annotate::Tool,
+    pub(crate) history: annotate::History,
+    pub(crate) pending_draw: Option<PendingDraw>,
+    modifiers: ModifiersState,
 }
 
 impl Overlay {
@@ -108,6 +116,10 @@ impl Overlay {
             last_redraw: None,
             font: crate::text::Font::embedded(),
             scale_factor,
+            tool: annotate::Tool::Move,
+            history: annotate::History::new(),
+            pending_draw: None,
+            modifiers: ModifiersState::default(),
         })
     }
 
@@ -162,6 +174,10 @@ impl Overlay {
                 if let Err(e) = self.redraw() {
                     eprintln!("redraw error: {e:?}");
                 }
+                Outcome::Continue
+            }
+            WindowEvent::ModifiersChanged(new_mods) => {
+                self.modifiers = new_mods.state();
                 Outcome::Continue
             }
             WindowEvent::CloseRequested => Outcome::Cancelled,
@@ -233,6 +249,48 @@ impl Overlay {
     }
 
     fn handle_key(&mut self, key: Key) -> Outcome {
+        // Cmd+Shift+Z → redo; Cmd+Z → undo (only when Cmd held)
+        if self.modifiers.super_key() {
+            if let Key::Character(s) = &key {
+                let ch = s.chars().next().unwrap_or('\0').to_ascii_lowercase();
+                if ch == 'z' {
+                    let changed = if self.modifiers.shift_key() {
+                        self.history.redo()
+                    } else {
+                        self.history.undo()
+                    };
+                    if changed {
+                        self.window.request_redraw();
+                    }
+                    return Outcome::Continue;
+                }
+            }
+        }
+
+        // Tool shortcuts (only in Adjusting, no modifier)
+        if matches!(self.state, OverlayState::Adjusting { .. }) && !self.modifiers.super_key() {
+            if let Key::Character(s) = &key {
+                let ch = s.chars().next().unwrap_or('\0').to_ascii_lowercase();
+                let new_tool = match ch {
+                    'm' => Some(annotate::Tool::Move),
+                    'a' => Some(annotate::Tool::Arrow),
+                    'r' => Some(annotate::Tool::Rect),
+                    'e' => Some(annotate::Tool::Ellipse),
+                    'b' => Some(annotate::Tool::Mosaic),
+                    _ => None,
+                };
+                if let Some(t) = new_tool {
+                    self.pending_draw = None;
+                    if let OverlayState::Adjusting { rect, edit: _ } = self.state {
+                        self.state = OverlayState::Adjusting { rect, edit: None };
+                    }
+                    self.tool = t;
+                    self.window.request_redraw();
+                    return Outcome::Continue;
+                }
+            }
+        }
+
         match key {
             Key::Named(NamedKey::Escape) => match state::on_escape(self.state) {
                 Transition::Cancel => Outcome::Cancelled,
@@ -309,9 +367,48 @@ impl Overlay {
         if let Some(r) = sel_tuple {
             render::draw_selection_outline(&mut buf, w, h, r, 0x00FFFFFF);
         }
-        if matches!(self.state, OverlayState::Adjusting { .. }) {
-            if let Some(r) = sel_rect {
-                render::draw_anchors(&mut buf, w, h, r);
+        if let OverlayState::Adjusting { .. } = self.state {
+            // Annotations first (committed history, then in-flight pending).
+            for ann in self.history.current() {
+                annotate_render::draw_annotation_on_buf(
+                    &mut buf,
+                    w,
+                    h,
+                    frame_ref,
+                    *ann,
+                    ANNOTATION_ARGB,
+                );
+            }
+            if let Some(pending) = self.pending_draw {
+                annotate_render::draw_pending_on_buf(
+                    &mut buf,
+                    w,
+                    h,
+                    frame_ref,
+                    pending,
+                    ANNOTATION_ARGB,
+                );
+            }
+
+            // Anchors only when Move tool is active
+            if self.tool == annotate::Tool::Move {
+                if let Some(r) = sel_rect {
+                    render::draw_anchors(&mut buf, w, h, r);
+                }
+            }
+
+            // Toolbar
+            if let Some(sel_win) = sel_rect {
+                let tb = toolbar::Toolbar::layout(sel_win, (w, h));
+                toolbar::draw_toolbar(
+                    &mut buf,
+                    w,
+                    h,
+                    &tb,
+                    self.tool,
+                    self.history.can_undo(),
+                    self.history.can_redo(),
+                );
             }
         }
         if show_magnifier {
