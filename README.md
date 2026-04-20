@@ -67,17 +67,19 @@ notification permission ("quickshot wants to send you notifications"). Allow
 it so successful captures can show a confirmation banner. Subsequent
 captures are silent in terms of prompts.
 
-## Status (Iter 3)
+## Status (Iter 5a)
 
 - Region capture via configurable hotkey (default `Cmd+Shift+A`) with drag → anchor-adjust → Enter/double-click confirm + ESC cancel
+- **Annotation tools during region capture**: Arrow (A), Rectangle (R), Ellipse (E), Mosaic (B), Move (M) + Undo (Cmd+Z) / Redo (Cmd+Shift+Z)
+- **Mini toolbar below selection**: click to switch tool or undo/redo
 - Full-screen capture via configurable hotkey (default `Cmd+Shift+S`) — cursor's monitor, clipboard + optional notification
-- Menu-bar tray icon with Capture Region / Capture Screen / Quit
+- Menu-bar tray icon with Capture Region / Capture Screen / Edit Config / Start at Login / Quit
 - Configurable save-to-disk with templated filenames (`~/.config/quickshot/config.toml`)
-- macOS autostart via `quickshot --install-autostart` / `--uninstall-autostart`
+- macOS autostart via tray menu or `quickshot --install-autostart`
 - Live W × H size label (physical pixels) and 4× magnifier with crosshair + hex/coord readout during region capture
 - No cross-screen selection
 
-Release binary size on this machine: 1.4M.
+Release binary size on this machine: 3.2M.
 
 ## Config
 
