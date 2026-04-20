@@ -9,8 +9,8 @@ use super::annotate::Annotation;
 use super::state::Rect;
 
 pub const ANNOTATION_COLOR_RGBA: [u8; 4] = [0xFF, 0x3B, 0x30, 0xFF]; // #FF3B30
-pub const ANNOTATION_THICKNESS: i32 = 3;
-pub const ARROWHEAD_LEN: f32 = 14.0;
+pub const ANNOTATION_THICKNESS: i32 = 6; // 2× the original 3
+pub const ARROWHEAD_LEN: f32 = 28.0; // 2× the original 14
 
 /// Apply an annotation to a CROPPED image. `crop_offset` is the frame-space
 /// coordinate corresponding to the cropped image's (0, 0). Annotations are

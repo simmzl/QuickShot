@@ -4,11 +4,18 @@
 use super::annotate::Tool;
 use super::state::Rect;
 
-pub const TOOLBAR_H: i32 = 30;
-pub const TOOLBAR_GAP: i32 = 6;   // distance from selection edge
-pub const ICON_SIZE: i32 = 22;
-pub const ICON_PAD: i32 = 4;
-pub const SEP_WIDTH: i32 = 8;
+/// All toolbar lengths/sizes are multiplied by this factor.
+/// Icons are drawn into a 22×22 virtual canvas and nearest-neighbor upscaled.
+pub const UI_SCALE: i32 = 3;
+
+const SOURCE_ICON_SIZE: i32 = 22;
+
+pub const TOOLBAR_H: i32 = 30 * UI_SCALE;
+pub const TOOLBAR_GAP: i32 = 6 * UI_SCALE; // distance from selection edge
+pub const ICON_SIZE: i32 = SOURCE_ICON_SIZE * UI_SCALE;
+pub const ICON_PAD: i32 = 4 * UI_SCALE;
+pub const SEP_WIDTH: i32 = 8 * UI_SCALE;
+const PILL_RADIUS: i32 = 4 * UI_SCALE;
 
 pub struct Toolbar {
     pub origin: (i32, i32),
@@ -143,35 +150,81 @@ pub fn draw_toolbar(
     can_undo: bool,
     can_redo: bool,
 ) {
-    draw_pill(buf, win_w, win_h, toolbar.origin, toolbar.size, 4, 0x000000, 0.7);
+    draw_pill(buf, win_w, win_h, toolbar.origin, toolbar.size, PILL_RADIUS, 0x000000, 0.7);
 
     for btn in &toolbar.tool_buttons {
         if btn.tool == current_tool {
-            draw_pill(buf, win_w, win_h, btn.origin, btn.size, 4, 0xFFFFFF, 0.25);
+            draw_pill(buf, win_w, win_h, btn.origin, btn.size, PILL_RADIUS, 0xFFFFFF, 0.25);
         }
-        draw_tool_icon(buf, win_w, win_h, btn.tool, btn.origin, 0xFFFFFF);
+        draw_tool_icon_scaled(buf, win_w, win_h, btn.tool, btn.origin, 0xFFFFFF);
     }
 
     let undo_color = if can_undo { 0xFFFFFF } else { 0x888888 };
-    draw_icon_undo(buf, win_w, win_h, toolbar.undo_button.origin, undo_color);
+    draw_icon_scaled(buf, win_w, win_h, toolbar.undo_button.origin, undo_color, draw_icon_undo);
 
     let redo_color = if can_redo { 0xFFFFFF } else { 0x888888 };
-    draw_icon_redo(buf, win_w, win_h, toolbar.redo_button.origin, redo_color);
+    draw_icon_scaled(buf, win_w, win_h, toolbar.redo_button.origin, redo_color, draw_icon_redo);
 }
 
-fn draw_tool_icon(buf: &mut [u32], w: u32, h: u32, tool: Tool, origin: (i32, i32), color: u32) {
-    match tool {
-        Tool::Move => draw_icon_move(buf, w, h, origin, color),
-        Tool::Arrow => draw_icon_arrow(buf, w, h, origin, color),
-        Tool::Rect => draw_icon_rect(buf, w, h, origin, color),
-        Tool::Ellipse => draw_icon_ellipse(buf, w, h, origin, color),
-        Tool::Mosaic => draw_icon_mosaic(buf, w, h, origin, color),
+/// Render an icon function's output into a 22×22 temp buffer, then
+/// nearest-neighbor upscale each source pixel into a UI_SCALE×UI_SCALE block
+/// in the real softbuffer. Background (0x00000000) is treated as transparent
+/// and skipped, so the tool-button pill underneath shows through.
+fn draw_icon_scaled(
+    buf: &mut [u32],
+    win_w: u32,
+    win_h: u32,
+    origin: (i32, i32),
+    color: u32,
+    paint: fn(&mut [u32], u32, u32, (i32, i32), u32),
+) {
+    let s = SOURCE_ICON_SIZE;
+    let mut tmp: Vec<u32> = vec![0u32; (s * s) as usize];
+    paint(&mut tmp, s as u32, s as u32, (0, 0), color);
+    for sy in 0..s {
+        for sx in 0..s {
+            let idx = (sy * s + sx) as usize;
+            let px = tmp[idx];
+            if px == 0 {
+                continue;
+            }
+            for dy in 0..UI_SCALE {
+                for dx in 0..UI_SCALE {
+                    put(
+                        buf,
+                        win_w,
+                        win_h,
+                        origin.0 + sx * UI_SCALE + dx,
+                        origin.1 + sy * UI_SCALE + dy,
+                        px,
+                    );
+                }
+            }
+        }
     }
 }
 
+fn draw_tool_icon_scaled(
+    buf: &mut [u32],
+    win_w: u32,
+    win_h: u32,
+    tool: Tool,
+    origin: (i32, i32),
+    color: u32,
+) {
+    let paint: fn(&mut [u32], u32, u32, (i32, i32), u32) = match tool {
+        Tool::Move => draw_icon_move,
+        Tool::Arrow => draw_icon_arrow,
+        Tool::Rect => draw_icon_rect,
+        Tool::Ellipse => draw_icon_ellipse,
+        Tool::Mosaic => draw_icon_mosaic,
+    };
+    draw_icon_scaled(buf, win_w, win_h, origin, color, paint);
+}
+
 fn draw_icon_move(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    let cx = o.0 + ICON_SIZE / 2;
-    let cy = o.1 + ICON_SIZE / 2;
+    let cx = o.0 + SOURCE_ICON_SIZE / 2;
+    let cy = o.1 + SOURCE_ICON_SIZE / 2;
     for d in -5..=5 {
         put(buf, w, h, cx + d, cy, color);
         put(buf, w, h, cx, cy + d, color);
@@ -194,8 +247,8 @@ fn draw_icon_rect(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
 }
 
 fn draw_icon_ellipse(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    let cx = o.0 + ICON_SIZE / 2;
-    let cy = o.1 + ICON_SIZE / 2;
+    let cx = o.0 + SOURCE_ICON_SIZE / 2;
+    let cy = o.1 + SOURCE_ICON_SIZE / 2;
     let rx = 7.0f64;
     let ry = 6.0f64;
     for y in -7..=7 {
