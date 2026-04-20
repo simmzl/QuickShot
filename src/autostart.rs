@@ -57,6 +57,19 @@ pub fn uninstall() -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+pub fn is_installed() -> bool {
+    match plist_path() {
+        Ok(p) => p.exists(),
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn is_installed() -> bool {
+    false
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn install() -> Result<()> {
     bail!("autostart is only supported on macOS");

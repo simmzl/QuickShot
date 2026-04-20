@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use tray_icon::{
-    menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     Icon, TrayIcon, TrayIconBuilder,
 };
 use winit::event_loop::EventLoopProxy;
@@ -9,14 +9,19 @@ use crate::app::UserEvent;
 
 /// Keeps the tray icon alive for the program's lifetime.
 /// Dropping removes the icon from the menu bar.
+/// Holds a reference to the autostart CheckMenuItem so App can re-sync
+/// its checked state after install/uninstall.
 pub struct TrayGuard {
     _tray: TrayIcon,
+    pub autostart_item: CheckMenuItem,
 }
 
 const ICON_BYTES: &[u8] = include_bytes!("../assets/tray-icon.png");
 
 const ID_REGION: &str = "capture-region";
 const ID_SCREEN: &str = "capture-screen";
+const ID_EDIT_CONFIG: &str = "edit-config";
+const ID_TOGGLE_AUTOSTART: &str = "toggle-autostart";
 const ID_QUIT: &str = "quit";
 
 /// Install the menu-bar tray icon and spawn the menu-event forwarder.
@@ -24,6 +29,7 @@ pub fn install(
     proxy: EventLoopProxy<UserEvent>,
     region_label: &str,
     screen_label: &str,
+    autostart_initially_on: bool,
 ) -> Result<TrayGuard> {
     let icon = load_icon()?;
     let menu = Menu::new();
@@ -42,8 +48,31 @@ pub fn install(
         None,
     ))
     .context("append Capture Screen menu item")?;
+
     menu.append(&PredefinedMenuItem::separator())
         .context("append separator")?;
+
+    menu.append(&MenuItem::with_id(
+        ID_EDIT_CONFIG,
+        "Edit Config\u{2026}",
+        true,
+        None,
+    ))
+    .context("append Edit Config menu item")?;
+
+    let autostart_item = CheckMenuItem::with_id(
+        ID_TOGGLE_AUTOSTART,
+        "Start at Login",
+        true,
+        autostart_initially_on,
+        None,
+    );
+    menu.append(&autostart_item)
+        .context("append Start at Login menu item")?;
+
+    menu.append(&PredefinedMenuItem::separator())
+        .context("append separator")?;
+
     menu.append(&MenuItem::with_id(ID_QUIT, "Quit", true, None))
         .context("append Quit menu item")?;
 
@@ -56,7 +85,10 @@ pub fn install(
 
     spawn_forwarder(proxy);
 
-    Ok(TrayGuard { _tray: tray })
+    Ok(TrayGuard {
+        _tray: tray,
+        autostart_item,
+    })
 }
 
 fn load_icon() -> Result<Icon> {
@@ -73,9 +105,6 @@ fn spawn_forwarder(proxy: EventLoopProxy<UserEvent>) {
         let rx = MenuEvent::receiver();
         loop {
             if let Ok(event) = rx.try_recv() {
-                // In muda 0.17 (used by tray-icon 0.22), MenuId is a newtype `pub struct MenuId(pub String)`.
-                // It implements PartialEq<&str>, so we can compare directly: `event.id == ID_REGION`.
-                // Fallback: `event.id.0.as_str()` also works via the inner String field.
                 let (msg, delay) = if event.id == ID_REGION {
                     (
                         Some(UserEvent::CaptureRegion),
@@ -86,6 +115,10 @@ fn spawn_forwarder(proxy: EventLoopProxy<UserEvent>) {
                         Some(UserEvent::CaptureScreen),
                         Some(std::time::Duration::from_millis(150)),
                     )
+                } else if event.id == ID_EDIT_CONFIG {
+                    (Some(UserEvent::EditConfig), None)
+                } else if event.id == ID_TOGGLE_AUTOSTART {
+                    (Some(UserEvent::ToggleAutostart), None)
                 } else if event.id == ID_QUIT {
                     (Some(UserEvent::Quit), None)
                 } else {
