@@ -23,28 +23,25 @@ pub fn install() -> Result<()> {
     std::fs::write(&plist_path, plist).with_context(|| {
         format!("write plist to {}", plist_path.display())
     })?;
-    let status = std::process::Command::new("launchctl")
-        .arg("load")
-        .arg(&plist_path)
-        .status();
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => eprintln!(
-            "autostart: launchctl load exited with {s}; plist installed but not loaded"
-        ),
-        Err(e) => eprintln!("autostart: launchctl not runnable: {e}"),
-    }
+    // Intentionally NOT calling `launchctl load`. launchd scans
+    // ~/Library/LaunchAgents/*.plist at login, so the plist is picked up
+    // automatically on next login. Calling `launchctl load` now would honor
+    // RunAtLoad=true immediately and spawn a *second* quickshot instance
+    // alongside the process currently running (the one showing the menu).
     println!("installed autostart → {}", plist_path.display());
+    println!("(takes effect at next login)");
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
 pub fn uninstall() -> Result<()> {
     let plist_path = plist_path()?;
-    let _ = std::process::Command::new("launchctl")
-        .arg("unload")
-        .arg(&plist_path)
-        .status();
+    // Intentionally NOT calling `launchctl unload`. If the process currently
+    // handling this menu click was itself launched by launchd (user enabled
+    // autostart, logged out, logged in, then clicked disable), `launchctl
+    // unload` SIGTERMs that process. The app appears to exit instantly.
+    // Just removing the plist is sufficient: launchd won't see it at next
+    // login, and the current session keeps running until manual Quit.
     match std::fs::remove_file(&plist_path) {
         Ok(()) => println!("removed autostart"),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
