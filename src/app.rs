@@ -1,6 +1,6 @@
 use anyhow::Result;
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::window::WindowId;
 
@@ -169,11 +169,13 @@ impl App {
 }
 
 impl ApplicationHandler<UserEvent> for App {
-    fn resumed(&mut self, _event_loop: &ActiveEventLoop) {
-        // Install tray on first resume — NSApplication is fully active here on
-        // macOS, which is required for tray-icon to register NSStatusBar items
-        // reliably in bundled LSUIElement apps.
-        if self.tray.is_none() {
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
+        // Install tray on the very first event loop iteration. winit's `resumed`
+        // is tied to applicationDidBecomeActive on macOS, which doesn't fire
+        // for LSUIElement / headless apps that have no initial windows. Using
+        // `new_events(StartCause::Init)` is the pattern tray-icon's own winit
+        // example uses and fires unconditionally on startup.
+        if matches!(cause, StartCause::Init) && self.tray.is_none() {
             let initial_autostart = crate::autostart::is_installed();
             match crate::tray::install(
                 self.proxy.clone(),
@@ -186,6 +188,8 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
     }
+
+    fn resumed(&mut self, _event_loop: &ActiveEventLoop) {}
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         event_loop.set_control_flow(ControlFlow::Wait);
