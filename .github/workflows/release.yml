@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run test suite
+        run: cargo test
+
+      - name: Package .app + .dmg
+        run: bash scripts/package.sh
+
+      - name: Inspect artifacts
+        run: |
+          ls -lh dist/
+          file dist/quickshot.app/Contents/MacOS/quickshot
+          codesign --verify --verbose=2 dist/quickshot.app
+
+      - name: Create GitHub Release + upload DMG
+        uses: softprops/action-gh-release@v2
+        with:
+          name: quickshot ${{ github.ref_name }}
+          body: |
+            ## Install (macOS)
+
+            1. Download `quickshot-*.dmg` below.
+            2. Open it and drag `quickshot.app` to `Applications`.
+            3. **First launch:** right-click the app → **Open** → **Open** in the Gatekeeper dialog. This is required once for any app without an Apple Developer ID signature.
+            4. Grant **Screen Recording** permission on the first capture (System Settings → Privacy & Security → Screen Recording → enable quickshot → relaunch).
+
+            ## Use
+
+            - `Cmd+Shift+A` — region capture with drag → anchor adjust → Enter/double-click confirm.
+            - `Cmd+Shift+S` — full-screen capture.
+            - In Adjusting state: `A`/`R`/`E`/`B` = Arrow/Rect/Ellipse/Mosaic, `M` = Move, `Cmd+Z`/`Cmd+Shift+Z` = undo/redo.
+            - Tray menu: Edit Config, Start at Login, Quit.
+
+            Config: `~/.config/quickshot/config.toml`.
+
+            Universal binary (x86_64 + Apple Silicon), ad-hoc signed.
+          files: |
+            dist/quickshot-*.dmg
+          draft: false
+          prerelease: false
