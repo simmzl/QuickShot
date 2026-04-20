@@ -4,18 +4,18 @@
 use super::annotate::Tool;
 use super::state::Rect;
 
-/// All toolbar lengths/sizes are multiplied by this factor.
-/// Icons are drawn into a 22×22 virtual canvas and nearest-neighbor upscaled.
+/// All toolbar lengths/sizes are in physical pixels at this scale.
 pub const UI_SCALE: i32 = 3;
-
-const SOURCE_ICON_SIZE: i32 = 22;
 
 pub const TOOLBAR_H: i32 = 30 * UI_SCALE;
 pub const TOOLBAR_GAP: i32 = 6 * UI_SCALE; // distance from selection edge
-pub const ICON_SIZE: i32 = SOURCE_ICON_SIZE * UI_SCALE;
+pub const ICON_SIZE: i32 = 22 * UI_SCALE;
 pub const ICON_PAD: i32 = 4 * UI_SCALE;
 pub const SEP_WIDTH: i32 = 8 * UI_SCALE;
 const PILL_RADIUS: i32 = 4 * UI_SCALE;
+
+/// Stroke thickness (pixels) used by all icons. Scales with UI.
+const STROKE: i32 = 4;
 
 pub struct Toolbar {
     pub origin: (i32, i32),
@@ -156,162 +156,139 @@ pub fn draw_toolbar(
         if btn.tool == current_tool {
             draw_pill(buf, win_w, win_h, btn.origin, btn.size, PILL_RADIUS, 0xFFFFFF, 0.25);
         }
-        draw_tool_icon_scaled(buf, win_w, win_h, btn.tool, btn.origin, 0xFFFFFF);
+        draw_tool_icon(buf, win_w, win_h, btn.tool, btn.origin, 0xFFFFFF);
     }
 
     let undo_color = if can_undo { 0xFFFFFF } else { 0x888888 };
-    draw_icon_scaled(buf, win_w, win_h, toolbar.undo_button.origin, undo_color, draw_icon_undo);
+    draw_icon_undo(buf, win_w, win_h, toolbar.undo_button.origin, undo_color);
 
     let redo_color = if can_redo { 0xFFFFFF } else { 0x888888 };
-    draw_icon_scaled(buf, win_w, win_h, toolbar.redo_button.origin, redo_color, draw_icon_redo);
+    draw_icon_redo(buf, win_w, win_h, toolbar.redo_button.origin, redo_color);
 }
 
-/// Render an icon function's output into a 22×22 temp buffer, then
-/// nearest-neighbor upscale each source pixel into a UI_SCALE×UI_SCALE block
-/// in the real softbuffer. Background (0x00000000) is treated as transparent
-/// and skipped, so the tool-button pill underneath shows through.
-fn draw_icon_scaled(
-    buf: &mut [u32],
-    win_w: u32,
-    win_h: u32,
-    origin: (i32, i32),
-    color: u32,
-    paint: fn(&mut [u32], u32, u32, (i32, i32), u32),
-) {
-    let s = SOURCE_ICON_SIZE;
-    let mut tmp: Vec<u32> = vec![0u32; (s * s) as usize];
-    paint(&mut tmp, s as u32, s as u32, (0, 0), color);
-    for sy in 0..s {
-        for sx in 0..s {
-            let idx = (sy * s + sx) as usize;
-            let px = tmp[idx];
-            if px == 0 {
-                continue;
-            }
-            for dy in 0..UI_SCALE {
-                for dx in 0..UI_SCALE {
-                    put(
-                        buf,
-                        win_w,
-                        win_h,
-                        origin.0 + sx * UI_SCALE + dx,
-                        origin.1 + sy * UI_SCALE + dy,
-                        px,
-                    );
-                }
-            }
-        }
+fn draw_tool_icon(buf: &mut [u32], w: u32, h: u32, tool: Tool, origin: (i32, i32), color: u32) {
+    match tool {
+        Tool::Move => draw_icon_move(buf, w, h, origin, color),
+        Tool::Arrow => draw_icon_arrow(buf, w, h, origin, color),
+        Tool::Rect => draw_icon_rect(buf, w, h, origin, color),
+        Tool::Ellipse => draw_icon_ellipse(buf, w, h, origin, color),
+        Tool::Mosaic => draw_icon_mosaic(buf, w, h, origin, color),
     }
 }
 
-fn draw_tool_icon_scaled(
-    buf: &mut [u32],
-    win_w: u32,
-    win_h: u32,
-    tool: Tool,
-    origin: (i32, i32),
-    color: u32,
-) {
-    let paint: fn(&mut [u32], u32, u32, (i32, i32), u32) = match tool {
-        Tool::Move => draw_icon_move,
-        Tool::Arrow => draw_icon_arrow,
-        Tool::Rect => draw_icon_rect,
-        Tool::Ellipse => draw_icon_ellipse,
-        Tool::Mosaic => draw_icon_mosaic,
-    };
-    draw_icon_scaled(buf, win_w, win_h, origin, color, paint);
-}
+// All icon drawing is done natively at ICON_SIZE (=66) using filled primitives
+// (fill_disk, fill_rect, stroke_rect, stroke_arc) for smooth thick strokes.
 
 fn draw_icon_move(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    let cx = o.0 + SOURCE_ICON_SIZE / 2;
-    let cy = o.1 + SOURCE_ICON_SIZE / 2;
-    for d in -5..=5 {
-        put(buf, w, h, cx + d, cy, color);
-        put(buf, w, h, cx, cy + d, color);
-    }
+    // Plus sign: horizontal arm 40×STROKE, vertical arm STROKE×40, centered.
+    let cx = o.0 + ICON_SIZE / 2;
+    let cy = o.1 + ICON_SIZE / 2;
+    let arm = 20; // half-length
+    fill_rect(buf, w, h, cx - arm, cy - STROKE / 2, arm * 2, STROKE, color);
+    fill_rect(buf, w, h, cx - STROKE / 2, cy - arm, STROKE, arm * 2, color);
 }
 
 fn draw_icon_arrow(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    let (x0, y0) = (o.0 + 4, o.1 + 16);
-    let (x1, y1) = (o.0 + 16, o.1 + 4);
-    draw_line_2px(buf, w, h, x0, y0, x1, y1, color);
-    put(buf, w, h, x1 - 3, y1, color);
-    put(buf, w, h, x1 - 2, y1, color);
-    put(buf, w, h, x1, y1 + 2, color);
-    put(buf, w, h, x1, y1 + 3, color);
-    put(buf, w, h, x1 - 1, y1 + 1, color);
+    // Diagonal line from bottom-left to top-right.
+    let pad = ICON_SIZE / 5; // ~13
+    let (x0, y0) = (o.0 + pad, o.1 + ICON_SIZE - pad);
+    let (x1, y1) = (o.0 + ICON_SIZE - pad, o.1 + pad);
+    stroke_line(buf, w, h, x0, y0, x1, y1, STROKE, color);
+    // Filled triangular arrowhead at (x1, y1). Direction: up-right.
+    let head_len = 14.0;
+    let dx = (x1 - x0) as f64;
+    let dy = (y1 - y0) as f64;
+    let len = (dx * dx + dy * dy).sqrt().max(1.0);
+    let ux = dx / len;
+    let uy = dy / len;
+    let base_x = x1 as f64 - ux * head_len;
+    let base_y = y1 as f64 - uy * head_len;
+    let px = -uy;
+    let py = ux;
+    let half_w = head_len * 0.5;
+    let a = (base_x + px * half_w, base_y + py * half_w);
+    let b = (base_x - px * half_w, base_y - py * half_w);
+    fill_triangle(buf, w, h, (x1 as f64, y1 as f64), a, b, color);
 }
 
 fn draw_icon_rect(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    rect_outline(buf, w, h, o.0 + 4, o.1 + 5, 14, 12, color);
+    // Centered inset rectangle outline.
+    let pad = ICON_SIZE / 6; // ~11
+    stroke_rect(
+        buf,
+        w,
+        h,
+        o.0 + pad,
+        o.1 + pad,
+        ICON_SIZE - 2 * pad,
+        ICON_SIZE - 2 * pad,
+        STROKE,
+        color,
+    );
 }
 
 fn draw_icon_ellipse(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    let cx = o.0 + SOURCE_ICON_SIZE / 2;
-    let cy = o.1 + SOURCE_ICON_SIZE / 2;
-    let rx = 7.0f64;
-    let ry = 6.0f64;
-    for y in -7..=7 {
-        for x in -7..=7 {
-            let nx = x as f64 / rx;
-            let ny = y as f64 / ry;
-            let r = (nx * nx + ny * ny).sqrt();
-            if (r - 1.0).abs() < 0.12 {
-                put(buf, w, h, cx + x, cy + y, color);
-            }
-        }
-    }
+    let cx = o.0 + ICON_SIZE / 2;
+    let cy = o.1 + ICON_SIZE / 2;
+    let pad = ICON_SIZE / 6;
+    let rx = ((ICON_SIZE - 2 * pad) / 2) as f64;
+    let ry = rx * 0.85; // slight oval
+    stroke_ellipse(buf, w, h, cx, cy, rx, ry, STROKE, color);
 }
 
 fn draw_icon_mosaic(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
+    // 3×3 checker. Cell size computed so the whole grid fills the icon minus pad.
+    let pad = ICON_SIZE / 6;
+    let grid_side = ICON_SIZE - 2 * pad;
+    let cell = grid_side / 3;
     for row in 0..3 {
         for col in 0..3 {
             if (row + col) % 2 == 0 {
-                let x = o.0 + 5 + col * 4;
-                let y = o.1 + 5 + row * 4;
-                for dy in 0..3 {
-                    for dx in 0..3 {
-                        put(buf, w, h, x + dx, y + dy, color);
-                    }
-                }
+                let x = o.0 + pad + col * cell;
+                let y = o.1 + pad + row * cell;
+                fill_rect(buf, w, h, x, y, cell, cell, color);
             }
         }
     }
 }
 
 fn draw_icon_undo(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    let cx = o.0 + 11;
-    let cy = o.1 + 11;
-    for deg in 90..=270 {
-        let r = 6.0f64;
-        let rad = (deg as f64).to_radians();
-        let x = cx + (r * rad.cos()) as i32;
-        let y = cy + (r * rad.sin()) as i32;
-        put(buf, w, h, x, y, color);
-    }
-    put(buf, w, h, cx - 6, cy - 1, color);
-    put(buf, w, h, cx - 5, cy - 2, color);
-    put(buf, w, h, cx - 5, cy, color);
-    put(buf, w, h, cx - 7, cy - 1, color);
-    put(buf, w, h, cx - 6, cy + 1, color);
+    // Arc from 90° to 270° (top → bottom via the left side), with thick stroke.
+    // Arrowhead at the start (top, at 90°) pointing left/down-left.
+    let cx = o.0 + ICON_SIZE / 2;
+    let cy = o.1 + ICON_SIZE / 2;
+    let r = (ICON_SIZE / 3) as f64; // ~22
+    stroke_arc(buf, w, h, cx, cy, r, 90.0, 270.0, STROKE, color);
+
+    // Arrowhead: filled triangle at the TOP of the arc (where it starts, at 90°).
+    // At 90° the point is (cx, cy - r). Tangent direction of the arc at start
+    // (moving counter-clockwise to 270°) is -X.
+    let tip = (cx as f64 - r * 0.55, cy as f64 - r * 0.05);
+    let back_x = cx as f64 - r * 0.05;
+    let back_y = cy as f64 - r * 1.05;
+    let half = r * 0.35;
+    let a = (back_x, back_y - half * 0.3);
+    let b = (back_x + half, back_y + half);
+    fill_triangle(buf, w, h, tip, a, b, color);
 }
 
 fn draw_icon_redo(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    let cx = o.0 + 11;
-    let cy = o.1 + 11;
-    for deg in -90..=90 {
-        let r = 6.0f64;
-        let rad = (deg as f64).to_radians();
-        let x = cx + (r * rad.cos()) as i32;
-        let y = cy + (r * rad.sin()) as i32;
-        put(buf, w, h, x, y, color);
-    }
-    put(buf, w, h, cx + 6, cy - 1, color);
-    put(buf, w, h, cx + 5, cy - 2, color);
-    put(buf, w, h, cx + 5, cy, color);
-    put(buf, w, h, cx + 7, cy - 1, color);
-    put(buf, w, h, cx + 6, cy + 1, color);
+    // Mirror of undo: arc from -90° to 90° (top → bottom via the right side).
+    let cx = o.0 + ICON_SIZE / 2;
+    let cy = o.1 + ICON_SIZE / 2;
+    let r = (ICON_SIZE / 3) as f64;
+    stroke_arc(buf, w, h, cx, cy, r, -90.0, 90.0, STROKE, color);
+
+    let tip = (cx as f64 + r * 0.55, cy as f64 - r * 0.05);
+    let back_x = cx as f64 + r * 0.05;
+    let back_y = cy as f64 - r * 1.05;
+    let half = r * 0.35;
+    let a = (back_x, back_y - half * 0.3);
+    let b = (back_x - half, back_y + half);
+    fill_triangle(buf, w, h, tip, a, b, color);
 }
+
+// --- primitive drawing helpers (all operate on softbuffer ARGB u32) ---
 
 fn put(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, color: u32) {
     if x >= 0 && y >= 0 && x < w as i32 && y < h as i32 {
@@ -320,43 +297,163 @@ fn put(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, color: u32) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn rect_outline(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, rw: i32, rh: i32, color: u32) {
-    for dx in 0..rw {
-        put(buf, w, h, x + dx, y, color);
-        put(buf, w, h, x + dx, y + rh - 1, color);
-    }
+fn fill_rect(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, rw: i32, rh: i32, color: u32) {
     for dy in 0..rh {
-        put(buf, w, h, x, y + dy, color);
-        put(buf, w, h, x + rw - 1, y + dy, color);
+        for dx in 0..rw {
+            put(buf, w, h, x + dx, y + dy, color);
+        }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_line_2px(buf: &mut [u32], w: u32, h: u32, x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
-    let dx = (x1 - x0).abs();
-    let dy = -(y1 - y0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let sy = if y0 < y1 { 1 } else { -1 };
-    let mut err = dx + dy;
-    let mut x = x0;
-    let mut y = y0;
-    loop {
-        put(buf, w, h, x, y, color);
-        put(buf, w, h, x + 1, y, color);
-        put(buf, w, h, x, y + 1, color);
-        if x == x1 && y == y1 {
-            break;
-        }
-        let e2 = 2 * err;
-        if e2 >= dy {
-            err += dy;
-            x += sx;
-        }
-        if e2 <= dx {
-            err += dx;
-            y += sy;
+fn stroke_rect(
+    buf: &mut [u32],
+    w: u32,
+    h: u32,
+    x: i32,
+    y: i32,
+    rw: i32,
+    rh: i32,
+    thickness: i32,
+    color: u32,
+) {
+    // top, bottom
+    fill_rect(buf, w, h, x, y, rw, thickness, color);
+    fill_rect(buf, w, h, x, y + rh - thickness, rw, thickness, color);
+    // left, right
+    fill_rect(buf, w, h, x, y, thickness, rh, color);
+    fill_rect(buf, w, h, x + rw - thickness, y, thickness, rh, color);
+}
+
+fn fill_disk(buf: &mut [u32], w: u32, h: u32, cx: f64, cy: f64, r: f64, color: u32) {
+    let r_ceil = r.ceil() as i32;
+    let r2 = r * r;
+    for dy in -r_ceil..=r_ceil {
+        for dx in -r_ceil..=r_ceil {
+            let fx = dx as f64;
+            let fy = dy as f64;
+            if fx * fx + fy * fy <= r2 {
+                put(buf, w, h, cx as i32 + dx, cy as i32 + dy, color);
+            }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stroke_line(
+    buf: &mut [u32],
+    w: u32,
+    h: u32,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    thickness: i32,
+    color: u32,
+) {
+    let (fx, fy) = (x0 as f64, y0 as f64);
+    let (tx, ty) = (x1 as f64, y1 as f64);
+    let dx = tx - fx;
+    let dy = ty - fy;
+    let len = (dx * dx + dy * dy).sqrt().max(1.0);
+    let steps = (len.ceil() as i32).max(1);
+    let r = thickness as f64 / 2.0;
+    for i in 0..=steps {
+        let t = i as f64 / steps as f64;
+        let x = fx + dx * t;
+        let y = fy + dy * t;
+        fill_disk(buf, w, h, x, y, r, color);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stroke_arc(
+    buf: &mut [u32],
+    w: u32,
+    h: u32,
+    cx: i32,
+    cy: i32,
+    r: f64,
+    start_deg: f64,
+    end_deg: f64,
+    thickness: i32,
+    color: u32,
+) {
+    // Arc length in pixels ≈ r * (end-start) * π / 180
+    // Sample at 0.5-pixel intervals by choosing enough steps.
+    let arc_len = (r * (end_deg - start_deg).abs() * std::f64::consts::PI / 180.0).max(1.0);
+    let steps = (arc_len * 2.0) as i32;
+    let stroke_r = thickness as f64 / 2.0;
+    let (cxf, cyf) = (cx as f64, cy as f64);
+    for i in 0..=steps {
+        let t = i as f64 / steps as f64;
+        let deg = start_deg + (end_deg - start_deg) * t;
+        let rad = deg.to_radians();
+        let x = cxf + r * rad.cos();
+        let y = cyf + r * rad.sin();
+        fill_disk(buf, w, h, x, y, stroke_r, color);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stroke_ellipse(
+    buf: &mut [u32],
+    w: u32,
+    h: u32,
+    cx: i32,
+    cy: i32,
+    rx: f64,
+    ry: f64,
+    thickness: i32,
+    color: u32,
+) {
+    // Parametric ellipse: sample enough points for smooth stroke.
+    let perimeter = 2.0 * std::f64::consts::PI * rx.max(ry);
+    let steps = (perimeter * 2.0) as i32;
+    let stroke_r = thickness as f64 / 2.0;
+    let (cxf, cyf) = (cx as f64, cy as f64);
+    for i in 0..=steps {
+        let theta = (i as f64 / steps as f64) * 2.0 * std::f64::consts::PI;
+        let x = cxf + rx * theta.cos();
+        let y = cyf + ry * theta.sin();
+        fill_disk(buf, w, h, x, y, stroke_r, color);
+    }
+}
+
+fn fill_triangle(
+    buf: &mut [u32],
+    w: u32,
+    h: u32,
+    p0: (f64, f64),
+    p1: (f64, f64),
+    p2: (f64, f64),
+    color: u32,
+) {
+    let min_x = p0.0.min(p1.0).min(p2.0).floor() as i32;
+    let max_x = p0.0.max(p1.0).max(p2.0).ceil() as i32;
+    let min_y = p0.1.min(p1.1).min(p2.1).floor() as i32;
+    let max_y = p0.1.max(p1.1).max(p2.1).ceil() as i32;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let pf = (x as f64 + 0.5, y as f64 + 0.5);
+            if point_in_triangle(pf, p0, p1, p2) {
+                put(buf, w, h, x, y, color);
+            }
+        }
+    }
+}
+
+fn point_in_triangle(p: (f64, f64), a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> bool {
+    let d1 = sign_tri(p, a, b);
+    let d2 = sign_tri(p, b, c);
+    let d3 = sign_tri(p, c, a);
+    let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+    let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+    !(neg && pos)
+}
+
+fn sign_tri(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    (p.0 - b.0) * (a.1 - b.1) - (a.0 - b.0) * (p.1 - b.1)
 }
 
 #[allow(clippy::too_many_arguments)]
