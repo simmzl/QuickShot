@@ -194,8 +194,8 @@ fn draw_icon_arrow(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
     let (x0, y0) = (o.0 + pad, o.1 + ICON_SIZE - pad);
     let (x1, y1) = (o.0 + ICON_SIZE - pad, o.1 + pad);
     stroke_line(buf, w, h, x0, y0, x1, y1, STROKE, color);
-    // Arrowhead: narrow isosceles triangle (base ≈ 0.33 × length → ~18° half-angle).
-    let head_len = 20.0;
+    // Arrowhead: right-angle triangle — 90° tip (half-angle 45°, base = length).
+    let head_len = 18.0;
     let dx = (x1 - x0) as f64;
     let dy = (y1 - y0) as f64;
     let len = (dx * dx + dy * dy).sqrt().max(1.0);
@@ -205,7 +205,7 @@ fn draw_icon_arrow(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
     let base_y = y1 as f64 - uy * head_len;
     let px = -uy;
     let py = ux;
-    let half_w = head_len * 0.33;
+    let half_w = head_len; // base = head_len → 90° angle at tip
     let a = (base_x + px * half_w, base_y + py * half_w);
     let b = (base_x - px * half_w, base_y - py * half_w);
     fill_triangle(buf, w, h, (x1 as f64, y1 as f64), a, b, color);
