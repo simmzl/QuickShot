@@ -1,6 +1,9 @@
+pub(crate) mod annotate;
+pub(crate) mod annotate_render;
 pub(crate) mod hit;
 pub(crate) mod render;
 pub(crate) mod state;
+pub(crate) mod toolbar;
 
 use anyhow::{Context, Result};
 use image::RgbaImage;
@@ -8,12 +11,15 @@ use softbuffer::{Context as SoftContext, Surface};
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, NamedKey, ModifiersState};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowAttributes};
 
 use crate::capture::MonitorGeom;
 use state::{OverlayState, Rect, Transition};
+use annotate::PendingDraw;
+
+const ANNOTATION_ARGB: u32 = 0x00_FF_3B_30; // #FF3B30 (softbuffer 0x00RRGGBB)
 
 /// What `Overlay::handle_event` reports back to the caller after processing
 /// one winit event. Keeps `app.rs` from needing to inspect `OverlayState`.
@@ -34,6 +40,11 @@ pub struct Overlay {
     last_redraw: Option<std::time::Instant>,
     font: crate::text::Font,
     scale_factor: f32,
+    // Iter 5a: annotation state
+    pub(crate) tool: annotate::Tool,
+    pub(crate) history: annotate::History,
+    pub(crate) pending_draw: Option<PendingDraw>,
+    modifiers: ModifiersState,
 }
 
 impl Overlay {
@@ -105,6 +116,10 @@ impl Overlay {
             last_redraw: None,
             font: crate::text::Font::embedded(),
             scale_factor,
+            tool: annotate::Tool::Move,
+            history: annotate::History::new(),
+            pending_draw: None,
+            modifiers: ModifiersState::default(),
         })
     }
 
@@ -114,6 +129,17 @@ impl Overlay {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x as i32, position.y as i32);
+
+                // If a PendingDraw is in flight, update its endpoint.
+                if self.pending_draw.is_some() {
+                    let fp = self.window_point_to_frame_point(self.cursor);
+                    if let Some(p) = self.pending_draw.as_mut() {
+                        p.to_frame = fp;
+                    }
+                    self.request_redraw_throttled();
+                    return Outcome::Continue;
+                }
+
                 match self.state {
                     OverlayState::Dragging { start, .. } => {
                         self.state = state::on_mouse_move_dragging(start, self.cursor);
@@ -161,6 +187,10 @@ impl Overlay {
                 }
                 Outcome::Continue
             }
+            WindowEvent::ModifiersChanged(new_mods) => {
+                self.modifiers = new_mods.state();
+                Outcome::Continue
+            }
             WindowEvent::CloseRequested => Outcome::Cancelled,
             _ => Outcome::Continue,
         }
@@ -190,6 +220,48 @@ impl Overlay {
                         Transition::Stay => {}
                     }
                 }
+
+                // Toolbar click takes priority over everything else.
+                let win_size = self.window.inner_size();
+                let tb = toolbar::Toolbar::layout(rect, (win_size.width, win_size.height));
+                match tb.hit(self.cursor) {
+                    toolbar::ToolbarHit::Tool(t) => {
+                        self.pending_draw = None;
+                        if let OverlayState::Adjusting { rect: r, .. } = self.state {
+                            self.state = OverlayState::Adjusting { rect: r, edit: None };
+                        }
+                        self.tool = t;
+                        self.window.request_redraw();
+                        return Outcome::Continue;
+                    }
+                    toolbar::ToolbarHit::Undo => {
+                        if self.history.undo() {
+                            self.window.request_redraw();
+                        }
+                        return Outcome::Continue;
+                    }
+                    toolbar::ToolbarHit::Redo => {
+                        if self.history.redo() {
+                            self.window.request_redraw();
+                        }
+                        return Outcome::Continue;
+                    }
+                    toolbar::ToolbarHit::None => {}
+                }
+
+                // Drawing tool + click inside selection → start PendingDraw.
+                if self.tool.is_drawing() && rect.contains(self.cursor) {
+                    let fp = self.window_point_to_frame_point(self.cursor);
+                    self.pending_draw = Some(PendingDraw {
+                        tool: self.tool,
+                        from_frame: fp,
+                        to_frame: fp,
+                    });
+                    self.window.request_redraw();
+                    return Outcome::Continue;
+                }
+
+                // Move tool: existing Iter 2a behavior (anchor resize / translate / clear).
                 match hit::classify(self.cursor, rect) {
                     hit::HitZone::Anchor(a) => {
                         self.state = state::start_resize(rect, a, self.cursor);
@@ -210,6 +282,15 @@ impl Overlay {
     }
 
     fn handle_left_release(&mut self) -> Outcome {
+        // Commit an in-flight annotation draw first.
+        if let Some(pending) = self.pending_draw.take() {
+            if let Some(ann) = pending.finalize() {
+                self.history.push(ann);
+            }
+            self.window.request_redraw();
+            return Outcome::Continue;
+        }
+
         match self.state {
             OverlayState::Dragging { start, end } => {
                 let rect = Rect::normalize(start, end);
@@ -230,6 +311,48 @@ impl Overlay {
     }
 
     fn handle_key(&mut self, key: Key) -> Outcome {
+        // Cmd+Shift+Z → redo; Cmd+Z → undo (only when Cmd held)
+        if self.modifiers.super_key() {
+            if let Key::Character(s) = &key {
+                let ch = s.chars().next().unwrap_or('\0').to_ascii_lowercase();
+                if ch == 'z' {
+                    let changed = if self.modifiers.shift_key() {
+                        self.history.redo()
+                    } else {
+                        self.history.undo()
+                    };
+                    if changed {
+                        self.window.request_redraw();
+                    }
+                    return Outcome::Continue;
+                }
+            }
+        }
+
+        // Tool shortcuts (only in Adjusting, no modifier)
+        if matches!(self.state, OverlayState::Adjusting { .. }) && !self.modifiers.super_key() {
+            if let Key::Character(s) = &key {
+                let ch = s.chars().next().unwrap_or('\0').to_ascii_lowercase();
+                let new_tool = match ch {
+                    'm' => Some(annotate::Tool::Move),
+                    'a' => Some(annotate::Tool::Arrow),
+                    'r' => Some(annotate::Tool::Rect),
+                    'e' => Some(annotate::Tool::Ellipse),
+                    'b' => Some(annotate::Tool::Mosaic),
+                    _ => None,
+                };
+                if let Some(t) = new_tool {
+                    self.pending_draw = None;
+                    if let OverlayState::Adjusting { rect, edit: _ } = self.state {
+                        self.state = OverlayState::Adjusting { rect, edit: None };
+                    }
+                    self.tool = t;
+                    self.window.request_redraw();
+                    return Outcome::Continue;
+                }
+            }
+        }
+
         match key {
             Key::Named(NamedKey::Escape) => match state::on_escape(self.state) {
                 Transition::Cancel => Outcome::Cancelled,
@@ -256,6 +379,26 @@ impl Overlay {
 
     fn current_selection_rect_window(&self) -> Option<(u32, u32, u32, u32)> {
         self.current_selection_rect().map(|r| r.as_tuple_u32())
+    }
+
+    fn window_point_to_frame_point(&self, p: (i32, i32)) -> (i32, i32) {
+        let size = self.window.inner_size();
+        let (ww, wh) = (size.width.max(1) as i64, size.height.max(1) as i64);
+        let (fw, fh) = self.frame.dimensions();
+        let x = (p.0 as i64 * fw as i64 / ww) as i32;
+        let y = (p.1 as i64 * fh as i64 / wh) as i32;
+        (x, y)
+    }
+
+    /// Produce the final cropped + annotated RGBA image for export to clipboard / file.
+    pub fn flatten_for_export(&self, rect: Rect) -> image::RgbaImage {
+        let frame_rect = self.window_rect_to_frame_rect(rect);
+        let mut cropped = crate::crop::crop_rgba(&self.frame, frame_rect);
+        let offset = (frame_rect.0 as i32, frame_rect.1 as i32);
+        for ann in self.history.current() {
+            annotate_render::paint_on_cropped(&mut cropped, *ann, offset);
+        }
+        cropped
     }
 
     /// Translate a window-space rect into a frame-space rect.
@@ -306,9 +449,48 @@ impl Overlay {
         if let Some(r) = sel_tuple {
             render::draw_selection_outline(&mut buf, w, h, r, 0x00FFFFFF);
         }
-        if matches!(self.state, OverlayState::Adjusting { .. }) {
-            if let Some(r) = sel_rect {
-                render::draw_anchors(&mut buf, w, h, r);
+        if let OverlayState::Adjusting { .. } = self.state {
+            // Annotations first (committed history, then in-flight pending).
+            for ann in self.history.current() {
+                annotate_render::draw_annotation_on_buf(
+                    &mut buf,
+                    w,
+                    h,
+                    frame_ref,
+                    *ann,
+                    ANNOTATION_ARGB,
+                );
+            }
+            if let Some(pending) = self.pending_draw {
+                annotate_render::draw_pending_on_buf(
+                    &mut buf,
+                    w,
+                    h,
+                    frame_ref,
+                    pending,
+                    ANNOTATION_ARGB,
+                );
+            }
+
+            // Anchors only when Move tool is active
+            if self.tool == annotate::Tool::Move {
+                if let Some(r) = sel_rect {
+                    render::draw_anchors(&mut buf, w, h, r);
+                }
+            }
+
+            // Toolbar
+            if let Some(sel_win) = sel_rect {
+                let tb = toolbar::Toolbar::layout(sel_win, (w, h));
+                toolbar::draw_toolbar(
+                    &mut buf,
+                    w,
+                    h,
+                    &tb,
+                    self.tool,
+                    self.history.can_undo(),
+                    self.history.can_redo(),
+                );
             }
         }
         if show_magnifier {

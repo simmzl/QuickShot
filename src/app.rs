@@ -6,7 +6,6 @@ use winit::window::WindowId;
 
 use crate::capture;
 use crate::clipboard;
-use crate::crop;
 use crate::overlay::{state::Rect, Outcome, Overlay};
 use crate::tray::TrayGuard;
 
@@ -65,14 +64,17 @@ impl App {
         let Some(overlay) = self.overlay.take() else {
             return;
         };
-        let frame_rect = overlay.window_rect_to_frame_rect(rect);
-        let cropped = crop::crop_rgba(&overlay.frame, frame_rect);
-        match clipboard::put_image(&cropped) {
+        let final_image = overlay.flatten_for_export(rect);
+        match clipboard::put_image(&final_image) {
             Ok(()) => {
-                println!("copied {}x{} to clipboard", cropped.width(), cropped.height());
+                println!(
+                    "copied {}x{} to clipboard",
+                    final_image.width(),
+                    final_image.height()
+                );
                 if self.config.save.enabled {
                     match crate::file_save::save_png(
-                        &cropped,
+                        &final_image,
                         &self.config.save.directory,
                         &self.config.save.filename_template,
                         crate::file_save::CaptureMode::Region,
