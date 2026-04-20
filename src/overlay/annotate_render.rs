@@ -178,7 +178,7 @@ fn draw_arrowhead(img: &mut RgbaImage, from: (i32, i32), to: (i32, i32), color: 
     let base_y = ty - uy * ARROWHEAD_LEN as f64;
     let px = -uy;
     let py = ux;
-    let half_w = ARROWHEAD_LEN as f64 * 0.4;
+    let half_w = ARROWHEAD_LEN as f64 * 0.28;
     let a = (base_x + px * half_w, base_y + py * half_w);
     let b = (base_x - px * half_w, base_y - py * half_w);
     let tip = (tx, ty);
@@ -418,7 +418,7 @@ fn draw_arrowhead_buf(
     let base_y = ty - uy * ARROWHEAD_LEN as f64;
     let px = -uy;
     let py = ux;
-    let half_w = ARROWHEAD_LEN as f64 * 0.4;
+    let half_w = ARROWHEAD_LEN as f64 * 0.28;
     let a = (base_x + px * half_w, base_y + py * half_w);
     let b = (base_x - px * half_w, base_y - py * half_w);
     let tip = (tx, ty);

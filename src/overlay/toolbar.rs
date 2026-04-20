@@ -189,13 +189,13 @@ fn draw_icon_move(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
 }
 
 fn draw_icon_arrow(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    // Diagonal line from bottom-left to top-right.
+    // Diagonal line from bottom-left to top-right with a pointy arrowhead.
     let pad = ICON_SIZE / 5; // ~13
     let (x0, y0) = (o.0 + pad, o.1 + ICON_SIZE - pad);
     let (x1, y1) = (o.0 + ICON_SIZE - pad, o.1 + pad);
     stroke_line(buf, w, h, x0, y0, x1, y1, STROKE, color);
-    // Filled triangular arrowhead at (x1, y1). Direction: up-right.
-    let head_len = 14.0;
+    // Arrowhead: narrow isosceles triangle (base ≈ 0.33 × length → ~18° half-angle).
+    let head_len = 20.0;
     let dx = (x1 - x0) as f64;
     let dy = (y1 - y0) as f64;
     let len = (dx * dx + dy * dy).sqrt().max(1.0);
@@ -205,7 +205,7 @@ fn draw_icon_arrow(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
     let base_y = y1 as f64 - uy * head_len;
     let px = -uy;
     let py = ux;
-    let half_w = head_len * 0.5;
+    let half_w = head_len * 0.33;
     let a = (base_x + px * half_w, base_y + py * half_w);
     let b = (base_x - px * half_w, base_y - py * half_w);
     fill_triangle(buf, w, h, (x1 as f64, y1 as f64), a, b, color);
@@ -253,39 +253,29 @@ fn draw_icon_mosaic(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) 
 }
 
 fn draw_icon_undo(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    // Arc from 90° to 270° (top → bottom via the left side), with thick stroke.
-    // Arrowhead at the start (top, at 90°) pointing left/down-left.
+    // "<" chevron: two straight strokes meeting at the left-middle point.
     let cx = o.0 + ICON_SIZE / 2;
     let cy = o.1 + ICON_SIZE / 2;
-    let r = (ICON_SIZE / 3) as f64; // ~22
-    stroke_arc(buf, w, h, cx, cy, r, 90.0, 270.0, STROKE, color);
-
-    // Arrowhead: filled triangle at the TOP of the arc (where it starts, at 90°).
-    // At 90° the point is (cx, cy - r). Tangent direction of the arc at start
-    // (moving counter-clockwise to 270°) is -X.
-    let tip = (cx as f64 - r * 0.55, cy as f64 - r * 0.05);
-    let back_x = cx as f64 - r * 0.05;
-    let back_y = cy as f64 - r * 1.05;
-    let half = r * 0.35;
-    let a = (back_x, back_y - half * 0.3);
-    let b = (back_x + half, back_y + half);
-    fill_triangle(buf, w, h, tip, a, b, color);
+    let arm_x = ICON_SIZE / 4;
+    let arm_y = ICON_SIZE / 3;
+    let tip = (cx - arm_x, cy);
+    let top = (cx + arm_x, cy - arm_y);
+    let bot = (cx + arm_x, cy + arm_y);
+    stroke_line(buf, w, h, top.0, top.1, tip.0, tip.1, STROKE, color);
+    stroke_line(buf, w, h, tip.0, tip.1, bot.0, bot.1, STROKE, color);
 }
 
 fn draw_icon_redo(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    // Mirror of undo: arc from -90° to 90° (top → bottom via the right side).
+    // ">" chevron: two straight strokes meeting at the right-middle point.
     let cx = o.0 + ICON_SIZE / 2;
     let cy = o.1 + ICON_SIZE / 2;
-    let r = (ICON_SIZE / 3) as f64;
-    stroke_arc(buf, w, h, cx, cy, r, -90.0, 90.0, STROKE, color);
-
-    let tip = (cx as f64 + r * 0.55, cy as f64 - r * 0.05);
-    let back_x = cx as f64 + r * 0.05;
-    let back_y = cy as f64 - r * 1.05;
-    let half = r * 0.35;
-    let a = (back_x, back_y - half * 0.3);
-    let b = (back_x - half, back_y + half);
-    fill_triangle(buf, w, h, tip, a, b, color);
+    let arm_x = ICON_SIZE / 4;
+    let arm_y = ICON_SIZE / 3;
+    let tip = (cx + arm_x, cy);
+    let top = (cx - arm_x, cy - arm_y);
+    let bot = (cx - arm_x, cy + arm_y);
+    stroke_line(buf, w, h, top.0, top.1, tip.0, tip.1, STROKE, color);
+    stroke_line(buf, w, h, tip.0, tip.1, bot.0, bot.1, STROKE, color);
 }
 
 // --- primitive drawing helpers (all operate on softbuffer ARGB u32) ---
@@ -363,35 +353,6 @@ fn stroke_line(
         let x = fx + dx * t;
         let y = fy + dy * t;
         fill_disk(buf, w, h, x, y, r, color);
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn stroke_arc(
-    buf: &mut [u32],
-    w: u32,
-    h: u32,
-    cx: i32,
-    cy: i32,
-    r: f64,
-    start_deg: f64,
-    end_deg: f64,
-    thickness: i32,
-    color: u32,
-) {
-    // Arc length in pixels ≈ r * (end-start) * π / 180
-    // Sample at 0.5-pixel intervals by choosing enough steps.
-    let arc_len = (r * (end_deg - start_deg).abs() * std::f64::consts::PI / 180.0).max(1.0);
-    let steps = (arc_len * 2.0) as i32;
-    let stroke_r = thickness as f64 / 2.0;
-    let (cxf, cyf) = (cx as f64, cy as f64);
-    for i in 0..=steps {
-        let t = i as f64 / steps as f64;
-        let deg = start_deg + (end_deg - start_deg) * t;
-        let rad = deg.to_radians();
-        let x = cxf + r * rad.cos();
-        let y = cyf + r * rad.sin();
-        fill_disk(buf, w, h, x, y, stroke_r, color);
     }
 }
 
