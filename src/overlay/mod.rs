@@ -390,6 +390,17 @@ impl Overlay {
         (x, y)
     }
 
+    /// Produce the final cropped + annotated RGBA image for export to clipboard / file.
+    pub fn flatten_for_export(&self, rect: Rect) -> image::RgbaImage {
+        let frame_rect = self.window_rect_to_frame_rect(rect);
+        let mut cropped = crate::crop::crop_rgba(&self.frame, frame_rect);
+        let offset = (frame_rect.0 as i32, frame_rect.1 as i32);
+        for ann in self.history.current() {
+            annotate_render::paint_on_cropped(&mut cropped, *ann, offset);
+        }
+        cropped
+    }
+
     /// Translate a window-space rect into a frame-space rect.
     pub fn window_rect_to_frame_rect(&self, rect: Rect) -> (u32, u32, u32, u32) {
         let size = self.window.inner_size();

@@ -1,8 +1,6 @@
 //! Mini toolbar rendered during the Adjusting state. Pure-ish: layout is
 //! pure; drawing is straight softbuffer paints.
 
-#![allow(dead_code)] // wired in Tasks 5–7
-
 use super::annotate::Tool;
 use super::state::Rect;
 
@@ -126,6 +124,7 @@ impl Toolbar {
         ToolbarHit::None
     }
 
+    #[allow(dead_code)] // public API; retained for future callers
     pub fn contains(&self, cursor: (i32, i32)) -> bool {
         point_in(cursor, self.origin, self.size)
     }

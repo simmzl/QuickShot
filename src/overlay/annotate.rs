@@ -4,7 +4,6 @@ use super::state::Rect;
 
 /// A single placed annotation, in FRAME-space coordinates (physical pixels
 /// of the captured image, matching what the PNG contains).
-#[allow(dead_code)] // wired in Task 5+6
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Annotation {
     Arrow { from: (i32, i32), to: (i32, i32) },
@@ -13,7 +12,6 @@ pub enum Annotation {
     Mosaic { rect: Rect, block_size: u32 },
 }
 
-#[allow(dead_code)] // wired in Task 5+6
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     Move,
@@ -24,14 +22,12 @@ pub enum Tool {
 }
 
 impl Tool {
-    #[allow(dead_code)] // wired in Task 5+6
     pub fn is_drawing(self) -> bool {
         !matches!(self, Tool::Move)
     }
 }
 
 /// In-flight drawing: user has mouse-pressed while a drawing tool is active.
-#[allow(dead_code)] // wired in Task 5+6
 #[derive(Debug, Clone, Copy)]
 pub struct PendingDraw {
     pub tool: Tool,
@@ -43,7 +39,6 @@ impl PendingDraw {
     /// Produce the Annotation that this pending draw represents.
     /// Returns None if the tool is not drawing-capable (shouldn't happen in
     /// normal flow but protects against misuse).
-    #[allow(dead_code)] // wired in Task 5+6
     pub fn finalize(self) -> Option<Annotation> {
         match self.tool {
             Tool::Move => None,
@@ -68,13 +63,11 @@ impl PendingDraw {
 /// Undo/redo stack. Each completed annotation is pushed onto `undo_stack`;
 /// Undo moves the top annotation onto `redo_stack`. Any new push clears
 /// the redo stack.
-#[allow(dead_code)] // wired in Task 5+6
 pub struct History {
     undo_stack: Vec<Annotation>,
     redo_stack: Vec<Annotation>,
 }
 
-#[allow(dead_code)] // wired in Task 5+6
 impl History {
     pub fn new() -> Self {
         Self {
@@ -119,7 +112,6 @@ impl History {
     }
 }
 
-#[allow(dead_code)]
 impl Default for History {
     fn default() -> Self {
         Self::new()

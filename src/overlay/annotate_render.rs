@@ -3,8 +3,6 @@
 //!   * `*_on_buf`: paint into a softbuffer `&mut [u32]` (used by live preview;
 //!     implemented in Task 3).
 
-#![allow(dead_code)] // wired in Tasks 5–7
-
 use image::{Rgba, RgbaImage};
 
 use super::annotate::Annotation;
