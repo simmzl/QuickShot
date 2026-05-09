@@ -188,8 +188,12 @@ impl Font {
 
 /// Best-effort load of a CJK fallback font from well-known OS paths. Keeps the
 /// binary small (CJK fonts are 10–60 MB) at the cost of needing the host OS to
-/// ship one. Index 0 of a `.ttc` collection is the first face — for
-/// PingFang.ttc that's PingFang SC Regular, which is what we want.
+/// ship one.
+///
+/// `.ttc` (TrueType Collection) files contain multiple font faces. The default
+/// `collection_index = 0` may not be the CJK face (e.g. STHeiti Light.ttc face
+/// 0 has no Chinese glyphs). We probe each face index until we find one that
+/// contains the probe character '你' (U+4F60).
 fn load_cjk_fallback() -> Option<FontdueFont> {
     #[cfg(target_os = "macos")]
     let candidates: &[&str] = &[
@@ -197,6 +201,7 @@ fn load_cjk_fallback() -> Option<FontdueFont> {
         "/System/Library/Fonts/STHeiti Light.ttc",
         "/System/Library/Fonts/STHeiti Medium.ttc",
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/Supplemental/Songti.ttc",
     ];
     #[cfg(target_os = "windows")]
     let candidates: &[&str] = &[
@@ -208,15 +213,37 @@ fn load_cjk_fallback() -> Option<FontdueFont> {
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     ];
 
+    // Probe character — if a face contains '你', it's a CJK face.
+    let probe = '你';
+
     for path in candidates {
-        if let Ok(data) = std::fs::read(path) {
-            if let Ok(font) = FontdueFont::from_bytes(data.as_slice(), FontSettings::default()) {
-                eprintln!("quickshot: CJK fallback font loaded from {path}");
-                return Some(font);
+        let Ok(data) = std::fs::read(path) else { continue };
+        // .ttc files contain multiple faces; try up to 32 (typical max).
+        // Stop probing this file when from_bytes fails (out of faces).
+        for index in 0..32u32 {
+            let settings = FontSettings {
+                collection_index: index,
+                ..FontSettings::default()
+            };
+            match FontdueFont::from_bytes(data.as_slice(), settings) {
+                Ok(font) => {
+                    if font.lookup_glyph_index(probe) != 0 {
+                        eprintln!(
+                            "quickshot: CJK fallback loaded from {path} (face {index})"
+                        );
+                        return Some(font);
+                    }
+                    // This face exists but doesn't contain '你' — try next index.
+                }
+                Err(_) => {
+                    // No more faces in this .ttc.
+                    break;
+                }
             }
         }
     }
-    eprintln!("quickshot: no CJK fallback font found; CJK input will render as tofu");
+
+    eprintln!("quickshot: no CJK fallback face found; CJK input will render as tofu");
     None
 }
 
