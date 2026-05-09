@@ -175,12 +175,6 @@ impl Toolbar {
         }
     }
 
-    pub fn hit(&self, cursor: (i32, i32)) -> ToolbarHit {
-        // Backwards-compat: doesn't know the active tool. Existing callers
-        // that probe row-1 / outside-bar coordinates work without change.
-        self.hit_with_tool(cursor, Tool::Move)
-    }
-
     pub fn hit_with_tool(&self, cursor: (i32, i32), active_tool: Tool) -> ToolbarHit {
         for btn in &self.tool_buttons {
             if point_in(cursor, btn.origin, btn.size) {
@@ -574,7 +568,7 @@ mod tests {
         let t = Toolbar::layout(sel(), (1440, 900));
         let btn = &t.tool_buttons[1];
         let c = (btn.origin.0 + 5, btn.origin.1 + 5);
-        assert_eq!(t.hit(c), ToolbarHit::Tool(Tool::Arrow));
+        assert_eq!(t.hit_with_tool(c, Tool::Move), ToolbarHit::Tool(Tool::Arrow));
     }
 
     #[test]
@@ -582,13 +576,13 @@ mod tests {
         let t = Toolbar::layout(sel(), (1440, 900));
         let u = &t.undo_button;
         let c = (u.origin.0 + 3, u.origin.1 + 3);
-        assert_eq!(t.hit(c), ToolbarHit::Undo);
+        assert_eq!(t.hit_with_tool(c, Tool::Move), ToolbarHit::Undo);
     }
 
     #[test]
     fn hit_none_outside() {
         let t = Toolbar::layout(sel(), (1440, 900));
-        assert_eq!(t.hit((10, 10)), ToolbarHit::None);
+        assert_eq!(t.hit_with_tool((10, 10), Tool::Move), ToolbarHit::None);
     }
 
     #[test]

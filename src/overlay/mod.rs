@@ -234,7 +234,7 @@ impl Overlay {
                 // Toolbar click takes priority over everything else.
                 let win_size = self.window.inner_size();
                 let tb = toolbar::Toolbar::layout(rect, (win_size.width, win_size.height));
-                match tb.hit(self.cursor) {
+                match tb.hit_with_tool(self.cursor, self.tool) {
                     toolbar::ToolbarHit::Tool(t) => {
                         self.pending_draw = None;
                         if let OverlayState::Adjusting { rect: r, .. } = self.state {
