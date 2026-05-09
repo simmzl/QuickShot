@@ -5,7 +5,7 @@
 
 use image::{Rgba, RgbaImage};
 
-use super::annotate::Annotation;
+use super::annotate::{Annotation, AnnotationStyle};
 use super::state::Rect;
 
 pub const ARROWHEAD_LEN: f32 = 28.0; // 2× the original 14
@@ -37,7 +37,11 @@ pub fn paint_on_cropped(img: &mut RgbaImage, ann: &Annotation, crop_offset: (i32
             let local = Rect { x: rect.x - ox, y: rect.y - oy, w: rect.w, h: rect.h };
             apply_mosaic_on_image(img, local, *block_size);
         }
-        Annotation::Pen { .. } => unimplemented!("Pen render lands in Task 4"),
+        Annotation::Pen { points, style } => {
+            let translated: Vec<(i32, i32)> =
+                points.iter().map(|&(x, y)| (x - ox, y - oy)).collect();
+            paint_pen_on_image(img, &translated, *style);
+        }
     }
 }
 
@@ -305,6 +309,66 @@ fn window_thickness(frame_thickness: i32, frame_size: (u32, u32), window_size: (
     ((frame_thickness as f64) * ratio_w.min(ratio_h)).round().max(1.0) as i32
 }
 
+pub fn paint_pen_on_image(img: &mut RgbaImage, points: &[(i32, i32)], style: AnnotationStyle) {
+    if points.len() < 2 { return; }
+    let color = Rgba(style.color.rgba());
+    let thickness = style.stroke.px();
+    for w in points.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        draw_segment_on_image(img, a, b, color, thickness);
+    }
+}
+
+fn draw_segment_on_image(
+    img: &mut RgbaImage, a: (i32, i32), b: (i32, i32),
+    color: Rgba<u8>, thickness: i32,
+) {
+    let (w, h) = (img.width() as i32, img.height() as i32);
+    let (fx, fy) = (a.0 as f64, a.1 as f64);
+    let (tx, ty) = (b.0 as f64, b.1 as f64);
+    let dx = tx - fx;
+    let dy = ty - fy;
+    let len = (dx * dx + dy * dy).sqrt().max(1.0);
+    let steps = (len.ceil() as i32).max(1);
+    let r = thickness as f64 / 2.0;
+    let r_ceil = r.ceil() as i32;
+    let r2 = r * r;
+    for i in 0..=steps {
+        let t = i as f64 / steps as f64;
+        let cx = fx + dx * t;
+        let cy = fy + dy * t;
+        for ddy in -r_ceil..=r_ceil {
+            for ddx in -r_ceil..=r_ceil {
+                let fxd = ddx as f64;
+                let fyd = ddy as f64;
+                if fxd*fxd + fyd*fyd <= r2 {
+                    let x = cx as i32 + ddx;
+                    let y = cy as i32 + ddy;
+                    if x >= 0 && y >= 0 && x < w && y < h {
+                        img.put_pixel(x as u32, y as u32, color);
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn draw_pen_on_buf(
+    buf: &mut [u32], win_w: u32, win_h: u32,
+    frame: &RgbaImage, points: &[(i32, i32)], style: AnnotationStyle,
+) {
+    if points.len() < 2 { return; }
+    let frame_size = frame.dimensions();
+    let window_size = (win_w, win_h);
+    let thickness_win = window_thickness(style.stroke.px(), frame_size, window_size);
+    let argb = style.color.argb();
+    for w in points.windows(2) {
+        let a = frame_to_window(w[0], frame_size, window_size);
+        let b = frame_to_window(w[1], frame_size, window_size);
+        draw_line_thick_buf(buf, win_w, win_h, a, b, argb, thickness_win);
+    }
+}
+
 pub fn draw_annotation_on_buf(
     buf: &mut [u32],
     win_w: u32,
@@ -346,7 +410,9 @@ pub fn draw_annotation_on_buf(
         Annotation::Mosaic { rect, block_size } => {
             apply_mosaic_on_buf(buf, win_w, win_h, frame, *rect, *block_size);
         }
-        Annotation::Pen { .. } => unimplemented!("Pen pending render in Task 4"),
+        Annotation::Pen { points, style } => {
+            draw_pen_on_buf(buf, win_w, win_h, frame, points, *style);
+        }
     }
 }
 
@@ -364,8 +430,8 @@ pub fn draw_pending_on_buf(
                 draw_annotation_on_buf(buf, win_w, win_h, frame, &ann);
             }
         }
-        PendingDraw::Pen { .. } => {
-            unimplemented!("Pen pending render in Task 4");
+        PendingDraw::Pen { points, style } => {
+            draw_pen_on_buf(buf, win_w, win_h, frame, points, *style);
         }
     }
 }
@@ -677,5 +743,31 @@ mod tests {
             (10, 10),
         );
         assert_eq!(img.get_pixel(5, 5).0, [255, 59, 48, 255]);
+    }
+
+    #[test]
+    fn pen_paints_visible_pixels_on_image() {
+        use super::super::annotate::AnnotationStyle;
+        let mut img = RgbaImage::new(50, 50);
+        let style = AnnotationStyle::default();
+        let points = vec![(5, 25), (45, 25)];
+        paint_pen_on_image(&mut img, &points, style);
+        // The horizontal line should mark pixels along y=25 with the red color.
+        let any_red = (5..=45).any(|x| {
+            let p = img.get_pixel(x, 25);
+            p[0] >= 0xF0 && p[1] < 0x80 && p[2] < 0x80
+        });
+        assert!(any_red, "expected red pixels along the pen path");
+    }
+
+    #[test]
+    fn pen_with_under_two_points_is_noop() {
+        use super::super::annotate::AnnotationStyle;
+        let mut img = RgbaImage::new(20, 20);
+        let style = AnnotationStyle::default();
+        paint_pen_on_image(&mut img, &[(10, 10)], style);
+        for p in img.pixels() {
+            assert_eq!(*p, Rgba([0, 0, 0, 0]), "single-point pen should not paint");
+        }
     }
 }
