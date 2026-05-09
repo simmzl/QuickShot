@@ -119,12 +119,16 @@ impl PendingDraw {
         Self::Pen { points: vec![first], style }
     }
 
-    /// For Shape: replaces `to_frame`. For Pen: pushes the point if it's at
-    /// least 1 px (Manhattan) from the last sample (drops sub-pixel dupes).
+    /// For Shape: replaces `to_frame`. For Pen: pushes the point unless it's
+    /// identical to the last sample. The cursor stream is integer pixels, so
+    /// "≥ 1 px Manhattan from last" is equivalent to "not exactly equal to
+    /// last" — the dedup drops frames where the cursor sat still between
+    /// samples (e.g. user paused mid-stroke), not sub-pixel jitter.
     pub fn extend_to(&mut self, p: (i32, i32)) {
         match self {
             PendingDraw::Shape { to_frame, .. } => *to_frame = p,
             PendingDraw::Pen   { points, .. } => {
+                // Manhattan ≥ 1 on integer coords == "not equal to last".
                 let keep = points.last().is_none_or(|&last| {
                     (last.0 - p.0).abs() + (last.1 - p.1).abs() >= 1
                 });
@@ -309,11 +313,11 @@ mod tests {
     }
 
     #[test]
-    fn pen_dedup_filters_subpixel() {
+    fn pen_dedup_drops_consecutive_duplicates() {
         let mut p = PendingDraw::pen(AnnotationStyle::default(), (10, 10));
-        p.push_point((10, 10));   // exact dup, dropped
-        p.push_point((10, 11));   // 1 px Δ kept
-        p.push_point((10, 11));   // dup dropped
+        p.push_point((10, 10));   // exact dup of last, dropped
+        p.push_point((10, 11));   // distinct point, kept
+        p.push_point((10, 11));   // exact dup of last, dropped
         let a = p.finalize().unwrap();
         match a {
             Annotation::Pen { points, .. } => assert_eq!(points, vec![(10, 10), (10, 11)]),
