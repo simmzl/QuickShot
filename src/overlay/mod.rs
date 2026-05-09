@@ -28,6 +28,41 @@ pub enum Outcome {
     Cancelled,
 }
 
+pub(crate) struct TextEdit {
+    pub origin_frame: (i32, i32),
+    pub buffer: String,
+    pub last_blink: std::time::Instant,
+    pub cursor_visible: bool,
+}
+
+impl TextEdit {
+    pub fn new(origin_frame: (i32, i32)) -> Self {
+        Self {
+            origin_frame,
+            buffer: String::new(),
+            last_blink: std::time::Instant::now(),
+            cursor_visible: true,
+        }
+    }
+
+    /// Append a printable character to the buffer. Returns true if the buffer
+    /// changed (so the caller can request a redraw).
+    /// Backspace / Delete / control characters are ignored here — the caller
+    /// dispatches Named keys via `backspace()` / explicit Enter handling.
+    pub fn handle_char(&mut self, ch: char) -> bool {
+        if ch.is_control() && ch != '\n' {
+            return false;
+        }
+        self.buffer.push(ch);
+        true
+    }
+
+    /// Pop the last character (if any). Returns true if something was popped.
+    pub fn backspace(&mut self) -> bool {
+        self.buffer.pop().is_some()
+    }
+}
+
 pub(crate) fn key_to_color(c: char) -> Option<annotate::Color> {
     match c {
         '1' => Some(annotate::Color::Red),
@@ -53,6 +88,7 @@ pub struct Overlay {
     pub(crate) history: annotate::History,
     pub(crate) pending_draw: Option<PendingDraw>,
     pub(crate) current_style: AnnotationStyle,
+    pub(crate) text_edit: Option<TextEdit>,
     modifiers: ModifiersState,
 }
 
@@ -141,6 +177,7 @@ impl Overlay {
             history: annotate::History::new(),
             pending_draw: None,
             current_style: AnnotationStyle::default(),
+            text_edit: None,
             modifiers: ModifiersState::default(),
         })
     }
@@ -281,6 +318,27 @@ impl Overlay {
                     toolbar::ToolbarHit::None => {}
                 }
 
+                // Tool::Text: clicks inside the selection start/commit a TextEdit.
+                // Goes BEFORE the is_drawing() check so Text-tool clicks don't fall
+                // into the Pen/Shape branch. Toolbar hit check stays earlier so toolbar
+                // clicks still work when Text tool is active.
+                if self.tool == annotate::Tool::Text && rect.contains(self.cursor) {
+                    // Commit any in-flight TextEdit first.
+                    if let Some(t) = self.text_edit.take() {
+                        if !t.buffer.is_empty() {
+                            self.history.push(annotate::Annotation::Text {
+                                origin: t.origin_frame,
+                                content: t.buffer,
+                                style: self.current_style,
+                            });
+                        }
+                    }
+                    let fp = self.window_point_to_frame_point(self.cursor);
+                    self.text_edit = Some(TextEdit::new(fp));
+                    self.window.request_redraw();
+                    return Outcome::Continue;
+                }
+
                 // Drawing tool + click inside selection → start PendingDraw.
                 if self.tool.is_drawing() && rect.contains(self.cursor) {
                     let fp = self.window_point_to_frame_point(self.cursor);
@@ -342,6 +400,57 @@ impl Overlay {
     }
 
     fn handle_key(&mut self, key: Key) -> Outcome {
+        // While composing text, all keys route through TextEdit. Tool/color/stroke
+        // shortcuts and undo/redo are suppressed — only Enter (commit), Esc (discard),
+        // Shift+Enter (newline), Backspace, and printable chars apply.
+        if self.text_edit.is_some() {
+            match &key {
+                Key::Named(NamedKey::Enter) => {
+                    if self.modifiers.shift_key() {
+                        if let Some(t) = self.text_edit.as_mut() {
+                            t.handle_char('\n');
+                        }
+                        self.window.request_redraw();
+                        return Outcome::Continue;
+                    }
+                    // Plain Enter commits.
+                    if let Some(t) = self.text_edit.take() {
+                        if !t.buffer.is_empty() {
+                            self.history.push(annotate::Annotation::Text {
+                                origin: t.origin_frame,
+                                content: t.buffer,
+                                style: self.current_style,
+                            });
+                        }
+                    }
+                    self.window.request_redraw();
+                    return Outcome::Continue;
+                }
+                Key::Named(NamedKey::Escape) => {
+                    self.text_edit = None;
+                    self.window.request_redraw();
+                    return Outcome::Continue;
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    if let Some(t) = self.text_edit.as_mut() {
+                        t.backspace();
+                    }
+                    self.window.request_redraw();
+                    return Outcome::Continue;
+                }
+                Key::Character(s) => {
+                    if let Some(t) = self.text_edit.as_mut() {
+                        for ch in s.chars() {
+                            t.handle_char(ch);
+                        }
+                    }
+                    self.window.request_redraw();
+                    return Outcome::Continue;
+                }
+                _ => return Outcome::Continue,  // suppress all other keys while composing
+            }
+        }
+
         // Cmd+Shift+Z → redo; Cmd+Z → undo (only when Cmd held)
         if self.modifiers.super_key() {
             if let Key::Character(s) = &key {
@@ -526,6 +635,29 @@ impl Overlay {
                 );
             }
 
+            // Live TextEdit: blink toggle pass (mut), then render pass (immut).
+            // Two passes avoid a double-mutable-borrow on `self` between
+            // `self.text_edit` and `font` (which is `&mut self.font`).
+            if let Some(t) = self.text_edit.as_mut() {
+                let now = std::time::Instant::now();
+                if now.duration_since(t.last_blink) >= std::time::Duration::from_millis(530) {
+                    t.cursor_visible = !t.cursor_visible;
+                    t.last_blink = now;
+                }
+            }
+            if let Some(t) = self.text_edit.as_ref() {
+                let display: String = if t.cursor_visible {
+                    format!("{}|", t.buffer)
+                } else {
+                    t.buffer.clone()
+                };
+                let origin = t.origin_frame;
+                annotate_render::draw_text_on_buf(
+                    &mut buf, w, h, frame_ref, origin, &display,
+                    self.current_style, font,
+                );
+            }
+
             // Anchors only when Move tool is active
             if self.tool == annotate::Tool::Move {
                 if let Some(r) = sel_rect {
@@ -698,5 +830,32 @@ mod tests {
         assert_eq!(key_to_color('4'), Some(Color::Blue));
         assert_eq!(key_to_color('5'), None);
         assert_eq!(key_to_color('a'), None);
+    }
+
+    #[test]
+    fn text_edit_appends_printable() {
+        let mut t = TextEdit::new((10, 10));
+        t.handle_char('h');
+        t.handle_char('i');
+        assert_eq!(t.buffer, "hi");
+    }
+
+    #[test]
+    fn text_edit_backspace() {
+        let mut t = TextEdit::new((0, 0));
+        t.buffer.push_str("abc");
+        assert!(t.backspace());
+        assert_eq!(t.buffer, "ab");
+        t.buffer.clear();
+        assert!(!t.backspace());
+    }
+
+    #[test]
+    fn text_edit_newline() {
+        let mut t = TextEdit::new((0, 0));
+        t.handle_char('a');
+        t.handle_char('\n');
+        t.handle_char('b');
+        assert_eq!(t.buffer, "a\nb");
     }
 }
