@@ -313,43 +313,9 @@ pub fn paint_pen_on_image(img: &mut RgbaImage, points: &[(i32, i32)], style: Ann
     if points.len() < 2 { return; }
     let color = Rgba(style.color.rgba());
     let thickness = style.stroke.px();
-    for w in points.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        draw_segment_on_image(img, a, b, color, thickness);
-    }
-}
-
-fn draw_segment_on_image(
-    img: &mut RgbaImage, a: (i32, i32), b: (i32, i32),
-    color: Rgba<u8>, thickness: i32,
-) {
     let (w, h) = (img.width() as i32, img.height() as i32);
-    let (fx, fy) = (a.0 as f64, a.1 as f64);
-    let (tx, ty) = (b.0 as f64, b.1 as f64);
-    let dx = tx - fx;
-    let dy = ty - fy;
-    let len = (dx * dx + dy * dy).sqrt().max(1.0);
-    let steps = (len.ceil() as i32).max(1);
-    let r = thickness as f64 / 2.0;
-    let r_ceil = r.ceil() as i32;
-    let r2 = r * r;
-    for i in 0..=steps {
-        let t = i as f64 / steps as f64;
-        let cx = fx + dx * t;
-        let cy = fy + dy * t;
-        for ddy in -r_ceil..=r_ceil {
-            for ddx in -r_ceil..=r_ceil {
-                let fxd = ddx as f64;
-                let fyd = ddy as f64;
-                if fxd*fxd + fyd*fyd <= r2 {
-                    let x = cx as i32 + ddx;
-                    let y = cy as i32 + ddy;
-                    if x >= 0 && y >= 0 && x < w && y < h {
-                        img.put_pixel(x as u32, y as u32, color);
-                    }
-                }
-            }
-        }
+    for win in points.windows(2) {
+        draw_line_thick(img, win[0], win[1], color, thickness, w, h);
     }
 }
 
