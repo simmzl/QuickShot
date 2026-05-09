@@ -28,6 +28,16 @@ pub enum Outcome {
     Cancelled,
 }
 
+pub(crate) fn key_to_color(c: char) -> Option<annotate::Color> {
+    match c {
+        '1' => Some(annotate::Color::Red),
+        '2' => Some(annotate::Color::Yellow),
+        '3' => Some(annotate::Color::Green),
+        '4' => Some(annotate::Color::Blue),
+        _ => None,
+    }
+}
+
 pub struct Overlay {
     pub window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
@@ -42,6 +52,7 @@ pub struct Overlay {
     pub(crate) tool: annotate::Tool,
     pub(crate) history: annotate::History,
     pub(crate) pending_draw: Option<PendingDraw>,
+    pub(crate) current_style: AnnotationStyle,
     modifiers: ModifiersState,
 }
 
@@ -129,6 +140,7 @@ impl Overlay {
             tool: annotate::Tool::Move,
             history: annotate::History::new(),
             pending_draw: None,
+            current_style: AnnotationStyle::default(),
             modifiers: ModifiersState::default(),
         })
     }
@@ -256,8 +268,14 @@ impl Overlay {
                         }
                         return Outcome::Continue;
                     }
-                    // Color/Stroke clicks are wired in Task 8.
-                    toolbar::ToolbarHit::Color(_) | toolbar::ToolbarHit::Stroke(_) => {
+                    toolbar::ToolbarHit::Color(c) => {
+                        self.current_style.color = c;
+                        self.window.request_redraw();
+                        return Outcome::Continue;
+                    }
+                    toolbar::ToolbarHit::Stroke(s) => {
+                        self.current_style.stroke = s;
+                        self.window.request_redraw();
                         return Outcome::Continue;
                     }
                     toolbar::ToolbarHit::None => {}
@@ -268,7 +286,7 @@ impl Overlay {
                     let fp = self.window_point_to_frame_point(self.cursor);
                     self.pending_draw = Some(PendingDraw::shape(
                         self.tool,
-                        AnnotationStyle::default(),
+                        self.current_style,
                         fp,
                         fp,
                     ));
@@ -354,6 +372,8 @@ impl Overlay {
                     'r' => Some(annotate::Tool::Rect),
                     'e' => Some(annotate::Tool::Ellipse),
                     'b' => Some(annotate::Tool::Mosaic),
+                    'p' => Some(annotate::Tool::Pen),
+                    't' => Some(annotate::Tool::Text),
                     _ => None,
                 };
                 if let Some(t) = new_tool {
@@ -362,6 +382,22 @@ impl Overlay {
                         self.state = OverlayState::Adjusting { rect, edit: None };
                     }
                     self.tool = t;
+                    self.window.request_redraw();
+                    return Outcome::Continue;
+                }
+
+                if let Some(c) = key_to_color(ch) {
+                    self.current_style.color = c;
+                    self.window.request_redraw();
+                    return Outcome::Continue;
+                }
+                if ch == '[' {
+                    self.current_style.stroke = self.current_style.stroke.step_down();
+                    self.window.request_redraw();
+                    return Outcome::Continue;
+                }
+                if ch == ']' {
+                    self.current_style.stroke = self.current_style.stroke.step_up();
                     self.window.request_redraw();
                     return Outcome::Continue;
                 }
@@ -508,7 +544,7 @@ impl Overlay {
                     h,
                     &tb,
                     self.tool,
-                    annotate::AnnotationStyle::default(), // TEMPORARY — Task 8 swaps for self.current_style
+                    self.current_style,
                     self.history.can_undo(),
                     self.history.can_redo(),
                 );
@@ -648,5 +684,21 @@ fn log_macos_window_level(window: &Window) {
         eprintln!(
             "quickshot: overlay NSWindow level={level} collectionBehavior={behavior:#x}"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use annotate::Color;
+
+    #[test]
+    fn key_to_color_mapping() {
+        assert_eq!(key_to_color('1'), Some(Color::Red));
+        assert_eq!(key_to_color('2'), Some(Color::Yellow));
+        assert_eq!(key_to_color('3'), Some(Color::Green));
+        assert_eq!(key_to_color('4'), Some(Color::Blue));
+        assert_eq!(key_to_color('5'), None);
+        assert_eq!(key_to_color('a'), None);
     }
 }
