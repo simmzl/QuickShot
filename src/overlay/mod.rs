@@ -1,6 +1,5 @@
 pub(crate) mod annotate;
 pub(crate) mod annotate_render;
-pub(crate) mod help_panel;
 pub(crate) mod hit;
 pub(crate) mod render;
 pub(crate) mod state;
@@ -97,9 +96,10 @@ pub struct Overlay {
     pub(crate) current_style: AnnotationStyle,
     pub(crate) text_edit: Option<TextEdit>,
     modifiers: ModifiersState,
-    /// Whether the keyboard cheatsheet panel is currently shown. Toggled by `h`,
-    /// dismissed by Esc or any mouse click.
-    pub(crate) show_help: bool,
+    /// Whether per-button keyboard hint badges are currently shown on the
+    /// toolbar. Toggled by `h` while in Adjusting state, dismissed by Esc or
+    /// any mouse click.
+    pub(crate) show_hints: bool,
 }
 
 impl Overlay {
@@ -193,7 +193,7 @@ impl Overlay {
             current_style: AnnotationStyle::default(),
             text_edit: None,
             modifiers: ModifiersState::default(),
-            show_help: false,
+            show_hints: false,
         })
     }
 
@@ -314,11 +314,11 @@ impl Overlay {
     }
 
     fn handle_left_press(&mut self) -> Outcome {
-        // If the help cheatsheet is up, the click only dismisses it — don't
+        // If hint badges are up, the click only dismisses them — don't
         // forward to any other handler so the user doesn't accidentally start
         // a drag/draw while reading shortcuts.
-        if self.show_help {
-            self.show_help = false;
+        if self.show_hints {
+            self.show_hints = false;
             self.window.request_redraw();
             return Outcome::Continue;
         }
@@ -528,15 +528,19 @@ impl Overlay {
             }
         }
 
-        // Help-panel toggle: works in Idle and Adjusting (but NOT during text
-        // compose — the TextEdit-priority block above already returned). `h` is
-        // only intercepted when no super key is held, so Cmd+H (hide app)
-        // remains forwardable to the OS if ever wired.
-        if !self.modifiers.super_key() {
+        // Hint-badge toggle: only fires in Adjusting (the toolbar exists then).
+        // The TextEdit-priority block above already returned, so this won't
+        // intercept `h` while the user is composing text. `h` is only honored
+        // when no super key is held so Cmd+H (hide app) remains forwardable to
+        // the OS if ever wired.
+        if matches!(self.state, OverlayState::Adjusting { .. })
+            && self.text_edit.is_none()
+            && !self.modifiers.super_key()
+        {
             if let Key::Character(s) = &key {
                 let ch = s.chars().next().unwrap_or('\0').to_ascii_lowercase();
                 if ch == 'h' {
-                    self.show_help = !self.show_help;
+                    self.show_hints = !self.show_hints;
                     self.window.request_redraw();
                     return Outcome::Continue;
                 }
@@ -605,8 +609,8 @@ impl Overlay {
 
         match key {
             Key::Named(NamedKey::Escape) => {
-                if self.show_help {
-                    self.show_help = false;
+                if self.show_hints {
+                    self.show_hints = false;
                     self.window.request_redraw();
                     return Outcome::Continue;
                 }
@@ -804,6 +808,7 @@ impl Overlay {
                     self.current_style,
                     self.history.can_undo(),
                     self.history.can_redo(),
+                    self.show_hints,
                 );
             }
         }
@@ -832,12 +837,6 @@ impl Overlay {
                     scale,
                 );
             }
-        }
-
-        // Help cheatsheet sits on top of everything else.
-        if self.show_help {
-            let layout = help_panel::layout(sel_rect, (w, h));
-            help_panel::draw(&mut buf, w, h, &layout, font);
         }
 
         buf.present().map_err(|e| anyhow::anyhow!("{e:?}"))?;

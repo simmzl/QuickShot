@@ -214,6 +214,7 @@ fn point_in(p: (i32, i32), origin: (i32, i32), size: (i32, i32)) -> bool {
     p.0 >= origin.0 && p.1 >= origin.1 && p.0 < origin.0 + size.0 && p.1 < origin.1 + size.1
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn draw_toolbar(
     buf: &mut [u32],
     win_w: u32,
@@ -223,6 +224,7 @@ pub fn draw_toolbar(
     current_style: AnnotationStyle,
     can_undo: bool,
     can_redo: bool,
+    show_hints: bool,
 ) {
     draw_pill(buf, win_w, win_h, toolbar.origin, toolbar.size, PILL_RADIUS, 0x000000, 0.7);
 
@@ -263,6 +265,154 @@ pub fn draw_toolbar(
         if btn.stroke == current_style.stroke && !row2_disabled {
             stroke_ellipse(buf, win_w, win_h, cx, cy, dot_r + 4.0, dot_r + 4.0, 2, 0xFFFFFF);
         }
+    }
+
+    if show_hints {
+        // Single-letter / digit hints anchored to bottom-right corner of each
+        // button. Renders as a tiny rounded-rect badge with monospace text.
+        for btn in &toolbar.tool_buttons {
+            let label = tool_hint_char(btn.tool);
+            draw_hint_badge(buf, win_w, win_h, btn.origin, btn.size, label);
+        }
+        // Row 2 hints — only when row 2 is enabled (not Mosaic).
+        if current_tool != Tool::Mosaic {
+            for (i, btn) in toolbar.color_buttons.iter().enumerate() {
+                let digit = match i { 0 => '1', 1 => '2', 2 => '3', _ => '4' };
+                draw_hint_badge(buf, win_w, win_h, btn.origin, btn.size, digit);
+            }
+        }
+    }
+}
+
+fn tool_hint_char(tool: Tool) -> char {
+    match tool {
+        Tool::Move => 'M',
+        Tool::Arrow => 'A',
+        Tool::Rect => 'R',
+        Tool::Ellipse => 'E',
+        Tool::Pen => 'P',
+        Tool::Text => 'T',
+        Tool::Mosaic => 'B',
+    }
+}
+
+fn draw_hint_badge(
+    buf: &mut [u32],
+    win_w: u32,
+    win_h: u32,
+    button_origin: (i32, i32),
+    button_size: (i32, i32),
+    label: char,
+) {
+    // Badge size scales with UI but stays compact.
+    let badge_w = (10 * UI_SCALE).max(20);
+    let badge_h = (10 * UI_SCALE).max(20);
+    // Anchor at the button's bottom-right corner.
+    let bx = button_origin.0 + button_size.0 - badge_w;
+    let by = button_origin.1 + button_size.1 - badge_h;
+
+    // Semi-transparent dark background, rounded.
+    draw_pill(
+        buf, win_w, win_h,
+        (bx, by), (badge_w, badge_h),
+        2 * UI_SCALE,
+        0x000000,
+        0.7,
+    );
+
+    // Letter is hand-rendered using the same primitives the toolbar uses
+    // for its own icons (no font, no rasterizer dependency, fast).
+    draw_hint_glyph(buf, win_w, win_h, (bx, by), (badge_w, badge_h), label);
+}
+
+fn draw_hint_glyph(
+    buf: &mut [u32],
+    win_w: u32,
+    win_h: u32,
+    badge_origin: (i32, i32),
+    badge_size: (i32, i32),
+    label: char,
+) {
+    let pad = 4;
+    let cw = badge_size.0 - pad * 2;
+    let ch = badge_size.1 - pad * 2;
+    let x = badge_origin.0 + pad;
+    let y = badge_origin.1 + pad;
+    let s = 2; // stroke
+    let color = 0xFFFFFF;
+
+    match label {
+        'M' => {
+            // Two verticals + a V in the middle.
+            fill_rect(buf, win_w, win_h, x, y, s, ch, color);
+            fill_rect(buf, win_w, win_h, x + cw - s, y, s, ch, color);
+            stroke_line(buf, win_w, win_h, x, y, x + cw / 2, y + ch / 2, s, color);
+            stroke_line(buf, win_w, win_h, x + cw / 2, y + ch / 2, x + cw, y, s, color);
+        }
+        'A' => {
+            // Triangle outline + crossbar.
+            stroke_line(buf, win_w, win_h, x + cw / 2, y, x, y + ch, s, color);
+            stroke_line(buf, win_w, win_h, x + cw / 2, y, x + cw, y + ch, s, color);
+            fill_rect(buf, win_w, win_h, x + cw / 4, y + ch * 2 / 3, cw / 2, s, color);
+        }
+        'R' => {
+            // Vertical + top-half rect outline + leg.
+            fill_rect(buf, win_w, win_h, x, y, s, ch, color);
+            fill_rect(buf, win_w, win_h, x, y, cw, s, color);                       // top
+            fill_rect(buf, win_w, win_h, x + cw - s, y, s, ch / 2, color);          // right (top half)
+            fill_rect(buf, win_w, win_h, x, y + ch / 2 - s / 2, cw, s, color);      // middle
+            stroke_line(buf, win_w, win_h, x + cw / 2, y + ch / 2, x + cw, y + ch, s, color); // leg
+        }
+        'E' => {
+            fill_rect(buf, win_w, win_h, x, y, s, ch, color);                       // vertical
+            fill_rect(buf, win_w, win_h, x, y, cw, s, color);                       // top
+            fill_rect(buf, win_w, win_h, x, y + ch / 2 - s / 2, cw * 3 / 4, s, color); // middle
+            fill_rect(buf, win_w, win_h, x, y + ch - s, cw, s, color);              // bottom
+        }
+        'P' => {
+            fill_rect(buf, win_w, win_h, x, y, s, ch, color);                       // vertical
+            fill_rect(buf, win_w, win_h, x, y, cw, s, color);                       // top
+            fill_rect(buf, win_w, win_h, x + cw - s, y, s, ch / 2, color);          // right (top half)
+            fill_rect(buf, win_w, win_h, x, y + ch / 2 - s / 2, cw, s, color);      // middle
+        }
+        'T' => {
+            fill_rect(buf, win_w, win_h, x, y, cw, s, color);                       // top bar
+            fill_rect(buf, win_w, win_h, x + cw / 2 - s / 2, y, s, ch, color);      // vertical
+        }
+        'B' => {
+            fill_rect(buf, win_w, win_h, x, y, s, ch, color);                       // vertical
+            fill_rect(buf, win_w, win_h, x, y, cw, s, color);                       // top
+            fill_rect(buf, win_w, win_h, x + cw - s, y, s, ch / 2, color);          // right top
+            fill_rect(buf, win_w, win_h, x, y + ch / 2 - s / 2, cw, s, color);      // middle
+            fill_rect(buf, win_w, win_h, x + cw - s, y + ch / 2, s, ch / 2, color); // right bottom
+            fill_rect(buf, win_w, win_h, x, y + ch - s, cw, s, color);              // bottom
+        }
+        '1' => {
+            fill_rect(buf, win_w, win_h, x + cw / 2 - s / 2, y, s, ch, color);
+            // small foot
+            fill_rect(buf, win_w, win_h, x + cw / 4, y + ch - s, cw / 2, s, color);
+            // top serif
+            stroke_line(buf, win_w, win_h, x + cw / 4, y + ch / 4, x + cw / 2, y, s, color);
+        }
+        '2' => {
+            fill_rect(buf, win_w, win_h, x, y, cw, s, color);                       // top
+            fill_rect(buf, win_w, win_h, x + cw - s, y, s, ch / 2, color);          // right top
+            fill_rect(buf, win_w, win_h, x, y + ch / 2 - s / 2, cw, s, color);      // middle
+            fill_rect(buf, win_w, win_h, x, y + ch / 2, s, ch / 2, color);          // left bottom
+            fill_rect(buf, win_w, win_h, x, y + ch - s, cw, s, color);              // bottom
+        }
+        '3' => {
+            fill_rect(buf, win_w, win_h, x, y, cw, s, color);                       // top
+            fill_rect(buf, win_w, win_h, x + cw - s, y, s, ch, color);              // right
+            fill_rect(buf, win_w, win_h, x + cw / 4, y + ch / 2 - s / 2, cw * 3 / 4, s, color); // middle
+            fill_rect(buf, win_w, win_h, x, y + ch - s, cw, s, color);              // bottom
+        }
+        '4' => {
+            fill_rect(buf, win_w, win_h, x, y, s, ch / 2 + s, color);               // left top
+            fill_rect(buf, win_w, win_h, x + cw - s, y, s, ch, color);              // right
+            fill_rect(buf, win_w, win_h, x, y + ch / 2 - s / 2, cw, s, color);      // middle
+        }
+        _ => {} // unknown label — skip
     }
 }
 
