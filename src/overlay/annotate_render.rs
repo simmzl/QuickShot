@@ -10,6 +10,9 @@ use super::state::Rect;
 
 pub const ARROWHEAD_LEN: f32 = 28.0; // 2× the original 14
 
+/// Multi-line text leading factor (line_height / px_size).
+const LINE_HEIGHT_RATIO: f32 = 1.2;
+
 /// Apply an annotation to a CROPPED image. `crop_offset` is the frame-space
 /// coordinate corresponding to the cropped image's (0, 0). Annotations are
 /// stored in frame coords; we translate into crop-local coords here.
@@ -360,9 +363,13 @@ pub fn paint_text_on_image(
     font: &mut crate::text::Font,
 ) {
     let px_size = style.stroke.font_px();
-    let line_height = (px_size * 1.2).round() as i32;
+    let line_height = (px_size * LINE_HEIGHT_RATIO).round() as i32;
     let color_rgba = style.color.rgba();
-    for (i, line) in content.split('\n').enumerate() {
+    // Normalize Windows / classic-Mac line endings before splitting on '\n'.
+    // Order matters: replace `\r\n` first, then lone `\r`. Otherwise `\r\n`
+    // would become `\n\n`.
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    for (i, line) in normalized.split('\n').enumerate() {
         let ly = origin.1 + i as i32 * line_height;
         font.render_text_rgba(img, origin.0, ly, line, px_size, color_rgba);
     }
@@ -387,8 +394,12 @@ pub fn draw_text_on_buf(
     let scale_y = window_size.1 as f32 / frame_size.1.max(1) as f32;
     let px_size = style.stroke.font_px() * scale_y;
     let argb = style.color.argb();
-    let line_height = (px_size * 1.2).round() as i32;
-    for (i, line) in content.split('\n').enumerate() {
+    let line_height = (px_size * LINE_HEIGHT_RATIO).round() as i32;
+    // Normalize Windows / classic-Mac line endings before splitting on '\n'.
+    // Order matters: replace `\r\n` first, then lone `\r`. Otherwise `\r\n`
+    // would become `\n\n`.
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    for (i, line) in normalized.split('\n').enumerate() {
         let ly = py + i as i32 * line_height;
         font.render_text(buf, win_w, win_h, px, ly, line, px_size, argb);
     }
@@ -445,6 +456,9 @@ pub fn draw_annotation_on_buf(
     }
 }
 
+/// Live preview of an in-flight `PendingDraw`. Currently only Shape and Pen
+/// variants exist; `font` is plumbed through for signature uniformity with
+/// `draw_annotation_on_buf` and reserved for a future text-edit pending path.
 pub fn draw_pending_on_buf(
     buf: &mut [u32],
     win_w: u32,
@@ -805,11 +819,15 @@ mod tests {
 
     #[test]
     fn paint_text_paints_some_pixels() {
-        let mut img = RgbaImage::new(200, 60);
+        // Use an opaque black destination — matches the real export path
+        // (flatten_for_export always paints onto an opaque crop). Since
+        // render_text_rgba correctly preserves destination alpha (Porter-Duff
+        // source-over), we detect "painted" by an RGB change, not by alpha.
+        let mut img = RgbaImage::from_pixel(200, 60, Rgba([0u8, 0, 0, 255]));
         let mut font = crate::text::Font::embedded();
         let style = AnnotationStyle::default();
         paint_text_on_image(&mut img, (4, 4), "Hi", style, &mut font);
-        let any_painted = img.pixels().any(|p| p[3] != 0);
+        let any_painted = img.pixels().any(|p| p[0] != 0 || p[1] != 0 || p[2] != 0);
         assert!(any_painted, "expected some painted pixels for 'Hi'");
     }
 }

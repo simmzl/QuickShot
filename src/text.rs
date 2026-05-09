@@ -121,7 +121,9 @@ impl Font {
                     bg[0] = ((color[0] as u16 * a + bg[0] as u16 * inv) / 255) as u8;
                     bg[1] = ((color[1] as u16 * a + bg[1] as u16 * inv) / 255) as u8;
                     bg[2] = ((color[2] as u16 * a + bg[2] as u16 * inv) / 255) as u8;
-                    bg[3] = 0xFF;
+                    // Destination alpha passes through unchanged. Caller is
+                    // responsible for ensuring the destination is opaque if
+                    // they want an opaque result (export path already does).
                 }
             }
             pen_x += metrics.advance_width;
