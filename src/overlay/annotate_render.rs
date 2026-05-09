@@ -13,7 +13,12 @@ pub const ARROWHEAD_LEN: f32 = 28.0; // 2× the original 14
 /// Apply an annotation to a CROPPED image. `crop_offset` is the frame-space
 /// coordinate corresponding to the cropped image's (0, 0). Annotations are
 /// stored in frame coords; we translate into crop-local coords here.
-pub fn paint_on_cropped(img: &mut RgbaImage, ann: &Annotation, crop_offset: (i32, i32)) {
+pub fn paint_on_cropped(
+    img: &mut RgbaImage,
+    ann: &Annotation,
+    crop_offset: (i32, i32),
+    font: &mut crate::text::Font,
+) {
     let (ox, oy) = crop_offset;
     match ann {
         Annotation::Arrow { from, to, style } => {
@@ -41,6 +46,15 @@ pub fn paint_on_cropped(img: &mut RgbaImage, ann: &Annotation, crop_offset: (i32
             let translated: Vec<(i32, i32)> =
                 points.iter().map(|&(x, y)| (x - ox, y - oy)).collect();
             paint_pen_on_image(img, &translated, *style);
+        }
+        Annotation::Text { origin, content, style } => {
+            paint_text_on_image(
+                img,
+                (origin.0 - ox, origin.1 - oy),
+                content,
+                *style,
+                font,
+            );
         }
     }
 }
@@ -335,12 +349,58 @@ pub fn draw_pen_on_buf(
     }
 }
 
+/// Paint multi-line text into an `RgbaImage` (export path). `origin` is the
+/// crop-local pen position of the first line; subsequent lines step down by
+/// `1.2 * px_size`. Color/font size come from `style`.
+pub fn paint_text_on_image(
+    img: &mut RgbaImage,
+    origin: (i32, i32),
+    content: &str,
+    style: AnnotationStyle,
+    font: &mut crate::text::Font,
+) {
+    let px_size = style.stroke.font_px();
+    let line_height = (px_size * 1.2).round() as i32;
+    let color_rgba = style.color.rgba();
+    for (i, line) in content.split('\n').enumerate() {
+        let ly = origin.1 + i as i32 * line_height;
+        font.render_text_rgba(img, origin.0, ly, line, px_size, color_rgba);
+    }
+}
+
+/// Paint multi-line text into the softbuffer (live preview). `origin_frame` is
+/// in frame coords; we map it to window coords and scale `px_size` by the
+/// vertical frame→window ratio so on-screen text matches the eventual export.
+pub fn draw_text_on_buf(
+    buf: &mut [u32],
+    win_w: u32,
+    win_h: u32,
+    frame: &RgbaImage,
+    origin_frame: (i32, i32),
+    content: &str,
+    style: AnnotationStyle,
+    font: &mut crate::text::Font,
+) {
+    let frame_size = frame.dimensions();
+    let window_size = (win_w, win_h);
+    let (px, py) = frame_to_window(origin_frame, frame_size, window_size);
+    let scale_y = window_size.1 as f32 / frame_size.1.max(1) as f32;
+    let px_size = style.stroke.font_px() * scale_y;
+    let argb = style.color.argb();
+    let line_height = (px_size * 1.2).round() as i32;
+    for (i, line) in content.split('\n').enumerate() {
+        let ly = py + i as i32 * line_height;
+        font.render_text(buf, win_w, win_h, px, ly, line, px_size, argb);
+    }
+}
+
 pub fn draw_annotation_on_buf(
     buf: &mut [u32],
     win_w: u32,
     win_h: u32,
     frame: &RgbaImage,
     ann: &Annotation,
+    font: &mut crate::text::Font,
 ) {
     let frame_size = frame.dimensions();
     let window_size = (win_w, win_h);
@@ -379,6 +439,9 @@ pub fn draw_annotation_on_buf(
         Annotation::Pen { points, style } => {
             draw_pen_on_buf(buf, win_w, win_h, frame, points, *style);
         }
+        Annotation::Text { origin, content, style } => {
+            draw_text_on_buf(buf, win_w, win_h, frame, *origin, content, *style, font);
+        }
     }
 }
 
@@ -388,12 +451,13 @@ pub fn draw_pending_on_buf(
     win_h: u32,
     frame: &RgbaImage,
     pending: &PendingDraw,
+    font: &mut crate::text::Font,
 ) {
     match pending {
         PendingDraw::Shape { .. } => {
             // Reuse finalize → Annotation, then draw. Cheap clone for Shape variants.
             if let Some(ann) = pending.clone().finalize() {
-                draw_annotation_on_buf(buf, win_w, win_h, frame, &ann);
+                draw_annotation_on_buf(buf, win_w, win_h, frame, &ann, font);
             }
         }
         PendingDraw::Pen { points, style } => {
@@ -700,6 +764,7 @@ mod tests {
     fn paint_on_cropped_translates() {
         use super::super::annotate::AnnotationStyle;
         let mut img = RgbaImage::from_pixel(20, 20, Rgba([0u8, 0, 0, 255]));
+        let mut font = crate::text::Font::embedded();
         paint_on_cropped(
             &mut img,
             &Annotation::Rect {
@@ -707,6 +772,7 @@ mod tests {
                 style: AnnotationStyle::default(),
             },
             (10, 10),
+            &mut font,
         );
         assert_eq!(img.get_pixel(5, 5).0, [255, 59, 48, 255]);
     }
@@ -735,5 +801,15 @@ mod tests {
         for p in img.pixels() {
             assert_eq!(*p, Rgba([0, 0, 0, 0]), "single-point pen should not paint");
         }
+    }
+
+    #[test]
+    fn paint_text_paints_some_pixels() {
+        let mut img = RgbaImage::new(200, 60);
+        let mut font = crate::text::Font::embedded();
+        let style = AnnotationStyle::default();
+        paint_text_on_image(&mut img, (4, 4), "Hi", style, &mut font);
+        let any_painted = img.pixels().any(|p| p[3] != 0);
+        assert!(any_painted, "expected some painted pixels for 'Hi'");
     }
 }

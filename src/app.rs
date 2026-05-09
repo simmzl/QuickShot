@@ -61,7 +61,7 @@ impl App {
     }
 
     fn confirm(&mut self, rect: Rect) {
-        let Some(overlay) = self.overlay.take() else {
+        let Some(mut overlay) = self.overlay.take() else {
             return;
         };
         let final_image = overlay.flatten_for_export(rect);

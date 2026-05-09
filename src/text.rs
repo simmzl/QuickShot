@@ -1,4 +1,5 @@
 use fontdue::{Font as FontdueFont, FontSettings};
+use image::RgbaImage;
 use std::collections::HashMap;
 
 const FONT_BYTES: &[u8] =
@@ -72,6 +73,57 @@ impl Font {
             let ascent = (px_size * 0.8) as i32;
             let gy = y + ascent - metrics.height as i32 - metrics.ymin;
             blit_glyph(buf, w, h, gx, gy, &metrics, &bitmap, (fr, fg, fb));
+            pen_x += metrics.advance_width;
+        }
+    }
+
+    /// Draw `text` into an RGBA8 image at pen position (x, y) (top-left of
+    /// baseline cell). `color` is the foreground RGBA; the glyph alpha is
+    /// composited over the existing image (alpha=255 channel forced opaque).
+    /// Mirrors `render_text` but for the export path which uses `image::RgbaImage`
+    /// rather than the softbuffer ARGB `&mut [u32]`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_text_rgba(
+        &mut self,
+        img: &mut RgbaImage,
+        x: i32,
+        y: i32,
+        text: &str,
+        px_size: f32,
+        color: [u8; 4],
+    ) {
+        if self.inner.is_none() {
+            return;
+        }
+        let mut pen_x = x as f32;
+        let (w, h) = (img.width() as i32, img.height() as i32);
+        for ch in text.chars() {
+            let Some((metrics, bitmap)) = self.rasterize(ch, px_size).cloned() else {
+                continue;
+            };
+            let gx = pen_x.round() as i32 + metrics.xmin;
+            let ascent = (px_size * 0.8) as i32;
+            let gy = y + ascent - metrics.height as i32 - metrics.ymin;
+            for ggy in 0..metrics.height as i32 {
+                for ggx in 0..metrics.width as i32 {
+                    let alpha = bitmap[(ggy * metrics.width as i32 + ggx) as usize];
+                    if alpha == 0 {
+                        continue;
+                    }
+                    let px = gx + ggx;
+                    let py = gy + ggy;
+                    if px < 0 || py < 0 || px >= w || py >= h {
+                        continue;
+                    }
+                    let bg = img.get_pixel_mut(px as u32, py as u32);
+                    let a = alpha as u16;
+                    let inv = (255 - alpha) as u16;
+                    bg[0] = ((color[0] as u16 * a + bg[0] as u16 * inv) / 255) as u8;
+                    bg[1] = ((color[1] as u16 * a + bg[1] as u16 * inv) / 255) as u8;
+                    bg[2] = ((color[2] as u16 * a + bg[2] as u16 * inv) / 255) as u8;
+                    bg[3] = 0xFF;
+                }
+            }
             pen_x += metrics.advance_width;
         }
     }

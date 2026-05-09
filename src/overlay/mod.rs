@@ -402,12 +402,17 @@ impl Overlay {
     }
 
     /// Produce the final cropped + annotated RGBA image for export to clipboard / file.
-    pub fn flatten_for_export(&self, rect: Rect) -> image::RgbaImage {
+    pub fn flatten_for_export(&mut self, rect: Rect) -> image::RgbaImage {
         let frame_rect = self.window_rect_to_frame_rect(rect);
         let mut cropped = crate::crop::crop_rgba(&self.frame, frame_rect);
         let offset = (frame_rect.0 as i32, frame_rect.1 as i32);
-        for ann in self.history.current() {
-            annotate_render::paint_on_cropped(&mut cropped, ann, offset);
+        // Snapshot the history so we can mutably borrow `self.font` while
+        // iterating. Cloning here is fine — flatten_for_export runs once at
+        // export time, not on the redraw hot path.
+        let history_clone: Vec<crate::overlay::annotate::Annotation> =
+            self.history.current().to_vec();
+        for ann in &history_clone {
+            annotate_render::paint_on_cropped(&mut cropped, ann, offset, &mut self.font);
         }
         cropped
     }
@@ -469,6 +474,7 @@ impl Overlay {
                     h,
                     frame_ref,
                     ann,
+                    font,
                 );
             }
             if let Some(pending) = self.pending_draw.as_ref() {
@@ -478,6 +484,7 @@ impl Overlay {
                     h,
                     frame_ref,
                     pending,
+                    font,
                 );
             }
 

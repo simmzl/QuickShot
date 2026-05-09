@@ -75,6 +75,7 @@ pub enum Annotation {
     Ellipse { rect: Rect, style: AnnotationStyle },
     Mosaic  { rect: Rect, block_size: u32 },
     Pen     { points: Vec<(i32, i32)>, style: AnnotationStyle },
+    Text    { origin: (i32, i32), content: String, style: AnnotationStyle },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -469,5 +470,17 @@ mod tests {
         let s = AnnotationStyle::default();
         assert_eq!(s.color,  Color::Red);
         assert_eq!(s.stroke, Stroke::Medium);
+    }
+
+    #[test]
+    fn text_annotation_round_trip() {
+        let mut h = History::new();
+        let a = Annotation::Text {
+            origin: (10, 20),
+            content: "hi".to_string(),
+            style: AnnotationStyle::default(),
+        };
+        h.push(a.clone());
+        assert_eq!(h.current(), &[a]);
     }
 }
