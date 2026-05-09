@@ -256,6 +256,10 @@ impl Overlay {
                         }
                         return Outcome::Continue;
                     }
+                    // Color/Stroke clicks are wired in Task 8.
+                    toolbar::ToolbarHit::Color(_) | toolbar::ToolbarHit::Stroke(_) => {
+                        return Outcome::Continue;
+                    }
                     toolbar::ToolbarHit::None => {}
                 }
 

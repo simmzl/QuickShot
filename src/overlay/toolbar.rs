@@ -1,7 +1,7 @@
 //! Mini toolbar rendered during the Adjusting state. Pure-ish: layout is
 //! pure; drawing is straight softbuffer paints.
 
-use super::annotate::Tool;
+use super::annotate::{Color, Stroke, Tool};
 use super::state::Rect;
 
 /// All toolbar lengths/sizes are in physical pixels at this scale.
@@ -12,6 +12,10 @@ pub const TOOLBAR_GAP: i32 = 6 * UI_SCALE; // distance from selection edge
 pub const ICON_SIZE: i32 = 22 * UI_SCALE;
 pub const ICON_PAD: i32 = 4 * UI_SCALE;
 pub const SEP_WIDTH: i32 = 8 * UI_SCALE;
+pub const ROW_GAP: i32 = 4 * UI_SCALE;
+pub const SWATCH_SIZE: i32 = 14 * UI_SCALE;
+pub const SWATCH_PAD: i32 = 6 * UI_SCALE;
+pub const STROKE_DOT_AREA: i32 = 18 * UI_SCALE;
 const PILL_RADIUS: i32 = 4 * UI_SCALE;
 
 /// Stroke thickness (pixels) used by all icons. Scales with UI.
@@ -23,6 +27,8 @@ pub struct Toolbar {
     pub tool_buttons: Vec<ToolButton>,
     pub undo_button: IconButton,
     pub redo_button: IconButton,
+    pub color_buttons: Vec<ColorButton>,
+    pub stroke_buttons: Vec<StrokeButton>,
 }
 
 pub struct ToolButton {
@@ -36,30 +42,54 @@ pub struct IconButton {
     pub size: (i32, i32),
 }
 
+pub struct ColorButton {
+    pub color: Color,
+    pub origin: (i32, i32),
+    pub size: (i32, i32),
+}
+
+pub struct StrokeButton {
+    pub stroke: Stroke,
+    pub origin: (i32, i32),
+    pub size: (i32, i32),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolbarHit {
     Tool(Tool),
     Undo,
     Redo,
+    Color(Color),
+    Stroke(Stroke),
     None,
 }
 
-const TOOL_ORDER: [Tool; 5] = [
-    Tool::Move,
-    Tool::Arrow,
-    Tool::Rect,
-    Tool::Ellipse,
-    Tool::Mosaic,
+const TOOL_ORDER: [Tool; 7] = [
+    Tool::Move, Tool::Arrow, Tool::Rect, Tool::Ellipse,
+    Tool::Pen, Tool::Text, Tool::Mosaic,
 ];
+
+const COLOR_ORDER: [Color; 4] = [Color::Red, Color::Yellow, Color::Green, Color::Blue];
+const STROKE_ORDER: [Stroke; 3] = [Stroke::Thin, Stroke::Medium, Stroke::Thick];
 
 impl Toolbar {
     pub fn layout(selection: Rect, window_size: (u32, u32)) -> Toolbar {
+        // Row 1: tools + sep + undo + redo (existing math, but TOOL_ORDER is now 7).
         let tools_w = TOOL_ORDER.len() as i32 * ICON_SIZE
             + (TOOL_ORDER.len() as i32 - 1) * ICON_PAD;
-        let content_w =
-            tools_w + SEP_WIDTH + (ICON_SIZE + ICON_PAD) + ICON_SIZE;
-        let bar_w = content_w + 2 * ICON_PAD;
-        let bar_h = TOOLBAR_H;
+        let row1_content_w = tools_w + SEP_WIDTH + (ICON_SIZE + ICON_PAD) + ICON_SIZE;
+        let row1_w = row1_content_w + 2 * ICON_PAD;
+
+        // Row 2: 4 swatches + sep + 3 stroke dots.
+        let swatches_w = COLOR_ORDER.len() as i32 * SWATCH_SIZE
+            + (COLOR_ORDER.len() as i32 - 1) * SWATCH_PAD;
+        let strokes_w = STROKE_ORDER.len() as i32 * STROKE_DOT_AREA
+            + (STROKE_ORDER.len() as i32 - 1) * SWATCH_PAD;
+        let row2_content_w = swatches_w + SEP_WIDTH + strokes_w;
+        let row2_w = row2_content_w + 2 * ICON_PAD;
+
+        let bar_w = row1_w.max(row2_w);
+        let bar_h = TOOLBAR_H * 2 + ROW_GAP;
 
         let mut bar_x = selection.x + selection.w / 2 - bar_w / 2;
         let below_y = selection.y + selection.h + TOOLBAR_GAP;
@@ -84,28 +114,55 @@ impl Toolbar {
             }
         };
 
-        let mut x = bar_x + ICON_PAD;
-        let y = bar_y + (bar_h - ICON_SIZE) / 2;
+        // Row 1 — tools + undo/redo.
+        let row1_x_start = bar_x + (bar_w - row1_content_w) / 2;
+        let mut x = row1_x_start;
+        let row1_y = bar_y + (TOOLBAR_H - ICON_SIZE) / 2;
         let mut tool_buttons = Vec::with_capacity(TOOL_ORDER.len());
         for &t in TOOL_ORDER.iter() {
             tool_buttons.push(ToolButton {
                 tool: t,
-                origin: (x, y),
+                origin: (x, row1_y),
                 size: (ICON_SIZE, ICON_SIZE),
             });
             x += ICON_SIZE + ICON_PAD;
         }
         x += SEP_WIDTH;
-
         let undo_button = IconButton {
-            origin: (x, y),
+            origin: (x, row1_y),
             size: (ICON_SIZE, ICON_SIZE),
         };
         x += ICON_SIZE + ICON_PAD;
         let redo_button = IconButton {
-            origin: (x, y),
+            origin: (x, row1_y),
             size: (ICON_SIZE, ICON_SIZE),
         };
+
+        // Row 2 — colors + strokes.
+        let row2_x_start = bar_x + (bar_w - row2_content_w) / 2;
+        let row2_top = bar_y + TOOLBAR_H + ROW_GAP;
+        let row2_y = row2_top + (TOOLBAR_H - SWATCH_SIZE) / 2;
+        let mut x = row2_x_start;
+        let mut color_buttons = Vec::with_capacity(COLOR_ORDER.len());
+        for &c in COLOR_ORDER.iter() {
+            color_buttons.push(ColorButton {
+                color: c,
+                origin: (x, row2_y),
+                size: (SWATCH_SIZE, SWATCH_SIZE),
+            });
+            x += SWATCH_SIZE + SWATCH_PAD;
+        }
+        x += SEP_WIDTH;
+        let stroke_y = row2_top + (TOOLBAR_H - STROKE_DOT_AREA) / 2;
+        let mut stroke_buttons = Vec::with_capacity(STROKE_ORDER.len());
+        for &s in STROKE_ORDER.iter() {
+            stroke_buttons.push(StrokeButton {
+                stroke: s,
+                origin: (x, stroke_y),
+                size: (STROKE_DOT_AREA, STROKE_DOT_AREA),
+            });
+            x += STROKE_DOT_AREA + SWATCH_PAD;
+        }
 
         Toolbar {
             origin: (bar_x, bar_y),
@@ -113,10 +170,18 @@ impl Toolbar {
             tool_buttons,
             undo_button,
             redo_button,
+            color_buttons,
+            stroke_buttons,
         }
     }
 
     pub fn hit(&self, cursor: (i32, i32)) -> ToolbarHit {
+        // Backwards-compat: doesn't know the active tool. Existing callers
+        // that probe row-1 / outside-bar coordinates work without change.
+        self.hit_with_tool(cursor, Tool::Move)
+    }
+
+    pub fn hit_with_tool(&self, cursor: (i32, i32), active_tool: Tool) -> ToolbarHit {
         for btn in &self.tool_buttons {
             if point_in(cursor, btn.origin, btn.size) {
                 return ToolbarHit::Tool(btn.tool);
@@ -127,6 +192,20 @@ impl Toolbar {
         }
         if point_in(cursor, self.redo_button.origin, self.redo_button.size) {
             return ToolbarHit::Redo;
+        }
+        // Row 2 disabled under Mosaic (style isn't applied).
+        if active_tool == Tool::Mosaic {
+            return ToolbarHit::None;
+        }
+        for btn in &self.color_buttons {
+            if point_in(cursor, btn.origin, btn.size) {
+                return ToolbarHit::Color(btn.color);
+            }
+        }
+        for btn in &self.stroke_buttons {
+            if point_in(cursor, btn.origin, btn.size) {
+                return ToolbarHit::Stroke(btn.stroke);
+            }
         }
         ToolbarHit::None
     }
@@ -478,9 +557,9 @@ mod tests {
     fn layout_below_default() {
         let t = Toolbar::layout(sel(), (1440, 900));
         assert!(t.origin.1 > sel().y + sel().h);
-        assert_eq!(t.tool_buttons.len(), 5);
+        assert_eq!(t.tool_buttons.len(), 7);
         assert_eq!(t.tool_buttons[0].tool, Tool::Move);
-        assert_eq!(t.tool_buttons[4].tool, Tool::Mosaic);
+        assert_eq!(t.tool_buttons[6].tool, Tool::Mosaic);
     }
 
     #[test]
@@ -518,5 +597,45 @@ mod tests {
         let c = (t.origin.0 + t.size.0 / 2, t.origin.1 + t.size.1 / 2);
         assert!(t.contains(c));
         assert!(!t.contains((10, 10)));
+    }
+
+    #[test]
+    fn tool_order_includes_pen_and_text() {
+        let t = Toolbar::layout(sel(), (1440, 900));
+        let tools: Vec<Tool> = t.tool_buttons.iter().map(|b| b.tool).collect();
+        assert_eq!(tools, vec![
+            Tool::Move, Tool::Arrow, Tool::Rect, Tool::Ellipse,
+            Tool::Pen, Tool::Text, Tool::Mosaic,
+        ]);
+    }
+
+    #[test]
+    fn layout_has_color_and_stroke_buttons() {
+        let t = Toolbar::layout(sel(), (1440, 900));
+        assert_eq!(t.color_buttons.len(), 4);
+        assert_eq!(t.stroke_buttons.len(), 3);
+        // Row 2 sits below row 1.
+        let row1_y = t.tool_buttons[0].origin.1;
+        let row2_y = t.color_buttons[0].origin.1;
+        assert!(row2_y > row1_y, "row 2 should sit below row 1");
+    }
+
+    #[test]
+    fn hit_returns_color_and_stroke() {
+        let t = Toolbar::layout(sel(), (1440, 900));
+        let yellow = &t.color_buttons[1];
+        let c = (yellow.origin.0 + 4, yellow.origin.1 + 4);
+        assert_eq!(t.hit_with_tool(c, Tool::Arrow), ToolbarHit::Color(Color::Yellow));
+        let thick = &t.stroke_buttons[2];
+        let s = (thick.origin.0 + 4, thick.origin.1 + 4);
+        assert_eq!(t.hit_with_tool(s, Tool::Arrow), ToolbarHit::Stroke(Stroke::Thick));
+    }
+
+    #[test]
+    fn hit_row2_returns_none_when_mosaic_active() {
+        let t = Toolbar::layout(sel(), (1440, 900));
+        let yellow = &t.color_buttons[1];
+        let c = (yellow.origin.0 + 4, yellow.origin.1 + 4);
+        assert_eq!(t.hit_with_tool(c, Tool::Mosaic), ToolbarHit::None);
     }
 }
