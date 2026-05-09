@@ -13,7 +13,7 @@ pub const ARROWHEAD_LEN: f32 = 28.0; // 2× the original 14
 /// Apply an annotation to a CROPPED image. `crop_offset` is the frame-space
 /// coordinate corresponding to the cropped image's (0, 0). Annotations are
 /// stored in frame coords; we translate into crop-local coords here.
-pub fn paint_on_cropped(img: &mut RgbaImage, ann: Annotation, crop_offset: (i32, i32)) {
+pub fn paint_on_cropped(img: &mut RgbaImage, ann: &Annotation, crop_offset: (i32, i32)) {
     let (ox, oy) = crop_offset;
     match ann {
         Annotation::Arrow { from, to, style } => {
@@ -35,8 +35,9 @@ pub fn paint_on_cropped(img: &mut RgbaImage, ann: Annotation, crop_offset: (i32,
         }
         Annotation::Mosaic { rect, block_size } => {
             let local = Rect { x: rect.x - ox, y: rect.y - oy, w: rect.w, h: rect.h };
-            apply_mosaic_on_image(img, local, block_size);
+            apply_mosaic_on_image(img, local, *block_size);
         }
+        Annotation::Pen { .. } => unimplemented!("Pen render lands in Task 4"),
     }
 }
 
@@ -309,15 +310,15 @@ pub fn draw_annotation_on_buf(
     win_w: u32,
     win_h: u32,
     frame: &RgbaImage,
-    ann: Annotation,
+    ann: &Annotation,
 ) {
     let frame_size = frame.dimensions();
     let window_size = (win_w, win_h);
     match ann {
         Annotation::Arrow { from, to, style } => {
             let thickness_win = window_thickness(style.stroke.px(), frame_size, window_size);
-            let f = frame_to_window(from, frame_size, window_size);
-            let t = frame_to_window(to, frame_size, window_size);
+            let f = frame_to_window(*from, frame_size, window_size);
+            let t = frame_to_window(*to, frame_size, window_size);
             let shaft_end = shaft_end_point(f, t, ARROWHEAD_LEN as f64);
             draw_line_thick_buf(buf, win_w, win_h, f, shaft_end, style.color.argb(), thickness_win);
             draw_arrowhead_buf(buf, win_w, win_h, f, t, style.color.argb());
@@ -343,8 +344,9 @@ pub fn draw_annotation_on_buf(
             draw_ellipse_outline_buf(buf, win_w, win_h, tl, br, style.color.argb(), thickness_win);
         }
         Annotation::Mosaic { rect, block_size } => {
-            apply_mosaic_on_buf(buf, win_w, win_h, frame, rect, block_size);
+            apply_mosaic_on_buf(buf, win_w, win_h, frame, *rect, *block_size);
         }
+        Annotation::Pen { .. } => unimplemented!("Pen pending render in Task 4"),
     }
 }
 
@@ -353,10 +355,18 @@ pub fn draw_pending_on_buf(
     win_w: u32,
     win_h: u32,
     frame: &RgbaImage,
-    pending: PendingDraw,
+    pending: &PendingDraw,
 ) {
-    if let Some(ann) = pending.finalize() {
-        draw_annotation_on_buf(buf, win_w, win_h, frame, ann);
+    match pending {
+        PendingDraw::Shape { .. } => {
+            // Reuse finalize → Annotation, then draw. Cheap clone for Shape variants.
+            if let Some(ann) = pending.clone().finalize() {
+                draw_annotation_on_buf(buf, win_w, win_h, frame, &ann);
+            }
+        }
+        PendingDraw::Pen { .. } => {
+            unimplemented!("Pen pending render in Task 4");
+        }
     }
 }
 
@@ -660,7 +670,7 @@ mod tests {
         let mut img = RgbaImage::from_pixel(20, 20, Rgba([0u8, 0, 0, 255]));
         paint_on_cropped(
             &mut img,
-            Annotation::Rect {
+            &Annotation::Rect {
                 rect: Rect { x: 15, y: 15, w: 5, h: 5 },
                 style: AnnotationStyle::default(),
             },

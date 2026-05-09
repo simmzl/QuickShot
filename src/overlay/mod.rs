@@ -144,7 +144,7 @@ impl Overlay {
                 if self.pending_draw.is_some() {
                     let fp = self.window_point_to_frame_point(self.cursor);
                     if let Some(p) = self.pending_draw.as_mut() {
-                        p.to_frame = fp;
+                        p.extend_to(fp);
                     }
                     self.request_redraw_throttled();
                     return Outcome::Continue;
@@ -262,12 +262,12 @@ impl Overlay {
                 // Drawing tool + click inside selection → start PendingDraw.
                 if self.tool.is_drawing() && rect.contains(self.cursor) {
                     let fp = self.window_point_to_frame_point(self.cursor);
-                    self.pending_draw = Some(PendingDraw {
-                        tool: self.tool,
-                        from_frame: fp,
-                        to_frame: fp,
-                        style: AnnotationStyle::default(),
-                    });
+                    self.pending_draw = Some(PendingDraw::shape(
+                        self.tool,
+                        AnnotationStyle::default(),
+                        fp,
+                        fp,
+                    ));
                     self.window.request_redraw();
                     return Outcome::Continue;
                 }
@@ -407,7 +407,7 @@ impl Overlay {
         let mut cropped = crate::crop::crop_rgba(&self.frame, frame_rect);
         let offset = (frame_rect.0 as i32, frame_rect.1 as i32);
         for ann in self.history.current() {
-            annotate_render::paint_on_cropped(&mut cropped, *ann, offset);
+            annotate_render::paint_on_cropped(&mut cropped, ann, offset);
         }
         cropped
     }
@@ -468,10 +468,10 @@ impl Overlay {
                     w,
                     h,
                     frame_ref,
-                    *ann,
+                    ann,
                 );
             }
-            if let Some(pending) = self.pending_draw {
+            if let Some(pending) = self.pending_draw.as_ref() {
                 annotate_render::draw_pending_on_buf(
                     &mut buf,
                     w,

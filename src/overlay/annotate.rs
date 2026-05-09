@@ -68,12 +68,13 @@ impl Default for AnnotationStyle {
 
 /// A single placed annotation, in FRAME-space coordinates (physical pixels
 /// of the captured image, matching what the PNG contains).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Annotation {
     Arrow   { from: (i32, i32), to: (i32, i32), style: AnnotationStyle },
     Rect    { rect: Rect, style: AnnotationStyle },
     Ellipse { rect: Rect, style: AnnotationStyle },
     Mosaic  { rect: Rect, block_size: u32 },
+    Pen     { points: Vec<(i32, i32)>, style: AnnotationStyle },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,6 +84,8 @@ pub enum Tool {
     Rect,
     Ellipse,
     Mosaic,
+    Pen,
+    Text,
 }
 
 impl Tool {
@@ -92,38 +95,73 @@ impl Tool {
 }
 
 /// In-flight drawing: user has mouse-pressed while a drawing tool is active.
-#[derive(Debug, Clone, Copy)]
-pub struct PendingDraw {
-    pub tool: Tool,
-    pub from_frame: (i32, i32),
-    pub to_frame: (i32, i32),
-    pub style: AnnotationStyle,
+/// Either a Shape (rubber-band: from/to anchors) or a Pen (free-form polyline).
+#[derive(Debug, Clone)]
+pub enum PendingDraw {
+    Shape {
+        tool: Tool,
+        from_frame: (i32, i32),
+        to_frame: (i32, i32),
+        style: AnnotationStyle,
+    },
+    Pen {
+        points: Vec<(i32, i32)>,
+        style: AnnotationStyle,
+    },
 }
 
 impl PendingDraw {
+    pub fn shape(tool: Tool, style: AnnotationStyle, from: (i32, i32), to: (i32, i32)) -> Self {
+        Self::Shape { tool, from_frame: from, to_frame: to, style }
+    }
+
+    pub fn pen(style: AnnotationStyle, first: (i32, i32)) -> Self {
+        Self::Pen { points: vec![first], style }
+    }
+
+    /// For Shape: replaces `to_frame`. For Pen: pushes the point if it's at
+    /// least 1 px (Manhattan) from the last sample (drops sub-pixel dupes).
+    pub fn extend_to(&mut self, p: (i32, i32)) {
+        match self {
+            PendingDraw::Shape { to_frame, .. } => *to_frame = p,
+            PendingDraw::Pen   { points, .. } => {
+                let keep = points.last().is_none_or(|&last| {
+                    (last.0 - p.0).abs() + (last.1 - p.1).abs() >= 1
+                });
+                if keep { points.push(p); }
+            }
+        }
+    }
+
+    pub fn push_point(&mut self, p: (i32, i32)) { self.extend_to(p) }
+
     /// Produce the Annotation that this pending draw represents.
-    /// Returns None if the tool is not drawing-capable (shouldn't happen in
-    /// normal flow but protects against misuse).
+    /// Returns None for Move/Pen/Text shape misuse, or for Pen with <2 points.
     pub fn finalize(self) -> Option<Annotation> {
-        match self.tool {
-            Tool::Move => None,
-            Tool::Arrow => Some(Annotation::Arrow {
-                from: self.from_frame,
-                to: self.to_frame,
-                style: self.style,
-            }),
-            Tool::Rect => Some(Annotation::Rect {
-                rect: Rect::normalize(self.from_frame, self.to_frame),
-                style: self.style,
-            }),
-            Tool::Ellipse => Some(Annotation::Ellipse {
-                rect: Rect::normalize(self.from_frame, self.to_frame),
-                style: self.style,
-            }),
-            Tool::Mosaic => Some(Annotation::Mosaic {
-                rect: Rect::normalize(self.from_frame, self.to_frame),
-                block_size: 8,
-            }),
+        match self {
+            PendingDraw::Shape { tool, from_frame, to_frame, style } => match tool {
+                Tool::Move | Tool::Pen | Tool::Text => None,
+                Tool::Arrow => Some(Annotation::Arrow {
+                    from: from_frame,
+                    to: to_frame,
+                    style,
+                }),
+                Tool::Rect => Some(Annotation::Rect {
+                    rect: Rect::normalize(from_frame, to_frame),
+                    style,
+                }),
+                Tool::Ellipse => Some(Annotation::Ellipse {
+                    rect: Rect::normalize(from_frame, to_frame),
+                    style,
+                }),
+                Tool::Mosaic => Some(Annotation::Mosaic {
+                    rect: Rect::normalize(from_frame, to_frame),
+                    block_size: 8,
+                }),
+            },
+            PendingDraw::Pen { points, style } => {
+                if points.len() < 2 { None } else { Some(Annotation::Pen { points, style }) }
+            }
         }
     }
 }
@@ -197,27 +235,19 @@ mod tests {
         assert!(Tool::Rect.is_drawing());
         assert!(Tool::Ellipse.is_drawing());
         assert!(Tool::Mosaic.is_drawing());
+        assert!(Tool::Pen.is_drawing());
+        assert!(Tool::Text.is_drawing());
     }
 
     #[test]
     fn finalize_move_returns_none() {
-        let p = PendingDraw {
-            tool: Tool::Move,
-            from_frame: (0, 0),
-            to_frame: (10, 10),
-            style: AnnotationStyle::default(),
-        };
+        let p = PendingDraw::shape(Tool::Move, AnnotationStyle::default(), (0, 0), (10, 10));
         assert!(p.finalize().is_none());
     }
 
     #[test]
     fn finalize_arrow() {
-        let p = PendingDraw {
-            tool: Tool::Arrow,
-            from_frame: (10, 20),
-            to_frame: (50, 80),
-            style: AnnotationStyle::default(),
-        };
+        let p = PendingDraw::shape(Tool::Arrow, AnnotationStyle::default(), (10, 20), (50, 80));
         let a = p.finalize().unwrap();
         assert_eq!(
             a,
@@ -231,12 +261,7 @@ mod tests {
 
     #[test]
     fn finalize_rect_normalizes() {
-        let p = PendingDraw {
-            tool: Tool::Rect,
-            from_frame: (80, 60),
-            to_frame: (20, 10),
-            style: AnnotationStyle::default(),
-        };
+        let p = PendingDraw::shape(Tool::Rect, AnnotationStyle::default(), (80, 60), (20, 10));
         match p.finalize().unwrap() {
             Annotation::Rect { rect, .. } => {
                 assert_eq!(rect, Rect { x: 20, y: 10, w: 60, h: 50 });
@@ -247,12 +272,7 @@ mod tests {
 
     #[test]
     fn finalize_ellipse_normalizes() {
-        let p = PendingDraw {
-            tool: Tool::Ellipse,
-            from_frame: (0, 0),
-            to_frame: (30, 40),
-            style: AnnotationStyle::default(),
-        };
+        let p = PendingDraw::shape(Tool::Ellipse, AnnotationStyle::default(), (0, 0), (30, 40));
         match p.finalize().unwrap() {
             Annotation::Ellipse { rect, .. } => {
                 assert_eq!(rect, Rect { x: 0, y: 0, w: 30, h: 40 });
@@ -263,18 +283,59 @@ mod tests {
 
     #[test]
     fn finalize_mosaic_has_block_size_8() {
-        let p = PendingDraw {
-            tool: Tool::Mosaic,
-            from_frame: (5, 5),
-            to_frame: (50, 50),
-            style: AnnotationStyle::default(),
-        };
+        let p = PendingDraw::shape(Tool::Mosaic, AnnotationStyle::default(), (5, 5), (50, 50));
         match p.finalize().unwrap() {
             Annotation::Mosaic { rect, block_size } => {
                 assert_eq!(rect, Rect { x: 5, y: 5, w: 45, h: 45 });
                 assert_eq!(block_size, 8);
             }
             _ => panic!("expected Mosaic"),
+        }
+    }
+
+    #[test]
+    fn pen_finalize_returns_pen_with_points() {
+        let mut p = PendingDraw::pen(AnnotationStyle::default(), (10, 20));
+        p.push_point((11, 21));
+        p.push_point((12, 22));
+        let a = p.finalize().expect("pen finalize");
+        match a {
+            Annotation::Pen { ref points, style } => {
+                assert_eq!(points, &vec![(10, 20), (11, 21), (12, 22)]);
+                assert_eq!(style, AnnotationStyle::default());
+            }
+            _ => panic!("expected Pen"),
+        }
+    }
+
+    #[test]
+    fn pen_dedup_filters_subpixel() {
+        let mut p = PendingDraw::pen(AnnotationStyle::default(), (10, 10));
+        p.push_point((10, 10));   // exact dup, dropped
+        p.push_point((10, 11));   // 1 px Δ kept
+        p.push_point((10, 11));   // dup dropped
+        let a = p.finalize().unwrap();
+        match a {
+            Annotation::Pen { points, .. } => assert_eq!(points, vec![(10, 10), (10, 11)]),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn pen_finalize_single_point_returns_none() {
+        // No drag (mouse press-release without movement) — discard.
+        let p = PendingDraw::pen(AnnotationStyle::default(), (10, 10));
+        assert!(p.finalize().is_none());
+    }
+
+    #[test]
+    fn shape_finalize_unchanged_after_enum_conversion() {
+        let p = PendingDraw::shape(Tool::Rect, AnnotationStyle::default(), (5, 5), (15, 25));
+        match p.finalize().unwrap() {
+            Annotation::Rect { rect, .. } => {
+                assert_eq!(rect, Rect { x: 5, y: 5, w: 10, h: 20 });
+            }
+            _ => panic!(),
         }
     }
 
@@ -319,7 +380,7 @@ mod tests {
             rect: Rect { x: 5, y: 5, w: 20, h: 20 },
             style: AnnotationStyle::default(),
         };
-        h.push(a);
+        h.push(a.clone());
         h.undo();
         assert!(h.redo());
         assert_eq!(h.current(), &[a]);
@@ -350,13 +411,13 @@ mod tests {
         let a = Annotation::Arrow { from: (0, 0), to: (1, 1), style: AnnotationStyle::default() };
         let b = Annotation::Arrow { from: (2, 2), to: (3, 3), style: AnnotationStyle::default() };
         let c = Annotation::Arrow { from: (4, 4), to: (5, 5), style: AnnotationStyle::default() };
-        h.push(a);
-        h.push(b);
+        h.push(a.clone());
+        h.push(b.clone());
         h.push(c);
         assert_eq!(h.current().len(), 3);
         h.undo();
         h.undo();
-        assert_eq!(h.current(), &[a]);
+        assert_eq!(h.current(), &[a.clone()]);
         h.redo();
         assert_eq!(h.current(), &[a, b]);
     }

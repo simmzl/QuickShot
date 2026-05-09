@@ -173,6 +173,8 @@ fn draw_tool_icon(buf: &mut [u32], w: u32, h: u32, tool: Tool, origin: (i32, i32
         Tool::Rect => draw_icon_rect(buf, w, h, origin, color),
         Tool::Ellipse => draw_icon_ellipse(buf, w, h, origin, color),
         Tool::Mosaic => draw_icon_mosaic(buf, w, h, origin, color),
+        // Pen / Text icons land in Task 7 — not in TOOL_ORDER yet so unreachable.
+        Tool::Pen | Tool::Text => {}
     }
 }
 
