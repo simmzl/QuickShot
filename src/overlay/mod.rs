@@ -74,13 +74,25 @@ impl Overlay {
                 .with_inner_size(size)
                 .with_position(position);
             let win = event_loop.create_window(attrs).context("create window")?;
-            // Set the NSWindow level high enough to cover dock and menu bar.
-            // kCGScreenSaverWindowLevel = 1000, kCGMainMenuWindowLevel = 24.
-            // We use 1000 to be above everything.
-            set_macos_window_level(&win, 1000);
+            // macOS 26 (Tahoe) tightened how it places accessory-app borderless
+            // windows: without an explicit collectionBehavior, an overlay with
+            // setLevel:1000 can land at the desktop layer instead of covering
+            // app windows. canJoinAllSpaces+stationary+fullScreenAuxiliary is
+            // the standard idiom for screen overlays / screenshot tools.
+            set_macos_overlay_collection_behavior(&win);
+            // kCGAssistiveTechHighWindowLevel = 1500 — Apple-reserved high level for
+            // assistive overlays, sits above kCGScreenSaverWindowLevel (1000) and is
+            // robust against macOS 26's new accessory-app demotion behavior.
+            set_macos_window_level(&win, 1500);
+            // Suppress the default NSWindow appear/order-front animation so the
+            // overlay doesn't fade-in or zoom on every capture.
+            set_macos_window_animation_none(&win);
             // Without this, ESC/Enter before the first mouse click are dropped
-            // because the borderless level-1000 window isn't automatically key.
+            // because the borderless high-level window isn't automatically key.
             make_macos_key_window(&win);
+            // Read back the level so a future regression is visible in stderr
+            // without having to attach a debugger.
+            log_macos_window_level(&win);
             win
         };
 
@@ -542,85 +554,90 @@ impl Overlay {
 
 }
 
+/// Resolve the NSWindow* backing a winit Window via [nsView window].
+#[cfg(target_os = "macos")]
+fn ns_window_of(window: &Window) -> Option<*mut std::ffi::c_void> {
+    use winit::raw_window_handle::HasWindowHandle;
+    let handle = window.window_handle().ok()?;
+    let winit::raw_window_handle::RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return None;
+    };
+    let ns_view = appkit.ns_view.as_ptr();
+    let ns_window = unsafe {
+        crate::macos_objc::msg_send_id(ns_view, crate::macos_objc::sel(c"window"))
+    };
+    if ns_window.is_null() { None } else { Some(ns_window) }
+}
+
 /// Promote the NSWindow to key-and-main so it receives keyboard events.
-/// Without this, a borderless+level-1000 window doesn't auto-focus on creation,
+/// Without this, a borderless high-level window doesn't auto-focus on creation
 /// and ESC/Enter before the first click are dropped.
 #[cfg(target_os = "macos")]
 fn make_macos_key_window(window: &Window) {
-    use winit::raw_window_handle::HasWindowHandle;
-    let Ok(handle) = window.window_handle() else {
-        return;
-    };
-    let raw = handle.as_raw();
-    let winit::raw_window_handle::RawWindowHandle::AppKit(appkit) = raw else {
-        return;
-    };
-    extern "C" {
-        fn objc_msgSend(
-            obj: *mut std::ffi::c_void,
-            sel: *mut std::ffi::c_void,
-            ...
-        ) -> *mut std::ffi::c_void;
-        fn sel_registerName(name: *const u8) -> *mut std::ffi::c_void;
-        fn objc_getClass(name: *const u8) -> *mut std::ffi::c_void;
-    }
+    use crate::macos_objc::{class, msg_send_id, msg_send_set_bool, msg_send_set_id, sel};
     unsafe {
         // Activate the app so it becomes frontmost. CLI daemons start with
         // NSApp inactive, which means key window doesn't receive global
         // keyboard events. activateIgnoringOtherApps:YES bypasses the usual
         // "don't steal focus" behavior — appropriate for a user-triggered
         // screenshot overlay.
-        let ns_app_class = objc_getClass(c"NSApplication".as_ptr().cast());
-        let sel_shared = sel_registerName(c"sharedApplication".as_ptr().cast());
-        let ns_app = objc_msgSend(ns_app_class, sel_shared);
+        let ns_app_class = class(c"NSApplication");
+        let ns_app = msg_send_id(ns_app_class, sel(c"sharedApplication"));
         if !ns_app.is_null() {
-            let sel_activate = sel_registerName(c"activateIgnoringOtherApps:".as_ptr().cast());
-            // YES = 1 (BOOL). Variadic args are promoted; 1u64 works for this ABI.
-            objc_msgSend(ns_app, sel_activate, 1u64);
+            // BOOL is signed char; YES = 1.
+            msg_send_set_bool(ns_app, sel(c"activateIgnoringOtherApps:"), 1);
         }
 
-        let ns_view = appkit.ns_view.as_ptr();
-        let sel_window = sel_registerName(c"window".as_ptr().cast());
-        let ns_window = objc_msgSend(ns_view, sel_window);
-        if ns_window.is_null() {
-            return;
-        }
-        let sel_make_key = sel_registerName(c"makeKeyAndOrderFront:".as_ptr().cast());
-        // nil argument (selector takes an id sender; we pass null).
-        objc_msgSend(ns_window, sel_make_key, std::ptr::null_mut::<std::ffi::c_void>());
+        let Some(ns_window) = ns_window_of(window) else { return };
+        // makeKeyAndOrderFront: takes an id sender; nil is fine.
+        msg_send_set_id(ns_window, sel(c"makeKeyAndOrderFront:"), std::ptr::null_mut());
     }
 }
 
-/// Set the NSWindow level via raw Objective-C message send.
-/// level 1000 = kCGScreenSaverWindowLevel, above dock and menu bar.
+/// Set the NSWindow level via NSWindow.setLevel:.
+/// 1000 = kCGScreenSaverWindowLevel, 1500 = kCGAssistiveTechHighWindowLevel.
 #[cfg(target_os = "macos")]
 fn set_macos_window_level(window: &Window, level: i64) {
-    use winit::raw_window_handle::HasWindowHandle;
-    let Ok(handle) = window.window_handle() else {
-        return;
-    };
-    let raw = handle.as_raw();
-    let winit::raw_window_handle::RawWindowHandle::AppKit(appkit) = raw else {
-        return;
-    };
-    extern "C" {
-        fn objc_msgSend(
-            obj: *mut std::ffi::c_void,
-            sel: *mut std::ffi::c_void,
-            ...
-        ) -> *mut std::ffi::c_void;
-        fn sel_registerName(name: *const u8) -> *mut std::ffi::c_void;
-    }
+    use crate::macos_objc::{msg_send_set_int, sel};
+    let Some(ns_window) = ns_window_of(window) else { return };
+    unsafe { msg_send_set_int(ns_window, sel(c"setLevel:"), level) }
+}
+
+/// Set NSWindow.animationBehavior = NSWindowAnimationBehaviorNone (1) so the
+/// window does not fade in / zoom on appear. Without this, every capture
+/// flashes a brief NSWindow-default appearance animation now that the overlay
+/// actually sits at the top of the z-stack.
+#[cfg(target_os = "macos")]
+fn set_macos_window_animation_none(window: &Window) {
+    use crate::macos_objc::{msg_send_set_int, sel};
+    let Some(ns_window) = ns_window_of(window) else { return };
+    // NSWindowAnimationBehaviorNone = 1 (NSWindowAnimationBehavior is NSInteger).
+    unsafe { msg_send_set_int(ns_window, sel(c"setAnimationBehavior:"), 1) }
+}
+
+/// Configure NSWindow.collectionBehavior for overlay use:
+///   canJoinAllSpaces (1) | stationary (16) | fullScreenAuxiliary (256) = 273
+/// Without this, macOS can demote a borderless accessory-app window to the
+/// desktop layer regardless of setLevel:.
+#[cfg(target_os = "macos")]
+fn set_macos_overlay_collection_behavior(window: &Window) {
+    use crate::macos_objc::{msg_send_set_uint, sel};
+    const BEHAVIOR: u64 = 1 | 16 | 256;
+    let Some(ns_window) = ns_window_of(window) else { return };
+    unsafe { msg_send_set_uint(ns_window, sel(c"setCollectionBehavior:"), BEHAVIOR) }
+}
+
+/// Read back NSWindow.level/collectionBehavior so regressions are visible in
+/// stderr without attaching a debugger.
+#[cfg(target_os = "macos")]
+fn log_macos_window_level(window: &Window) {
+    use crate::macos_objc::{msg_send_int, msg_send_uint, sel};
+    let Some(ns_window) = ns_window_of(window) else { return };
     unsafe {
-        // appkit.ns_view is a NonNull<c_void> pointing to the NSView.
-        // We send [[[nsView window] setLevel:level] to set the NSWindow level.
-        let ns_view = appkit.ns_view.as_ptr();
-        let sel_window = sel_registerName(c"window".as_ptr().cast());
-        let ns_window = objc_msgSend(ns_view, sel_window);
-        if ns_window.is_null() {
-            return;
-        }
-        let sel_set_level = sel_registerName(c"setLevel:".as_ptr().cast());
-        objc_msgSend(ns_window, sel_set_level, level);
+        let level = msg_send_int(ns_window, sel(c"level"));
+        let behavior = msg_send_uint(ns_window, sel(c"collectionBehavior"));
+        eprintln!(
+            "quickshot: overlay NSWindow level={level} collectionBehavior={behavior:#x}"
+        );
     }
 }

@@ -245,30 +245,19 @@ impl ApplicationHandler<UserEvent> for App {
 /// apps this is redundant but harmless; for direct-exec CLI it's required.
 #[cfg(target_os = "macos")]
 fn set_macos_activation_policy_accessory() {
-    extern "C" {
-        fn objc_msgSend(
-            obj: *mut std::ffi::c_void,
-            sel: *mut std::ffi::c_void,
-            ...
-        ) -> *mut std::ffi::c_void;
-        fn sel_registerName(name: *const u8) -> *mut std::ffi::c_void;
-        fn objc_getClass(name: *const u8) -> *mut std::ffi::c_void;
-    }
+    use crate::macos_objc::{class, msg_send_id, msg_send_set_int, sel};
     unsafe {
-        let ns_app_class = objc_getClass(c"NSApplication".as_ptr().cast());
+        let ns_app_class = class(c"NSApplication");
         if ns_app_class.is_null() {
             eprintln!("quickshot: objc_getClass(NSApplication) = null");
             return;
         }
-        let sel_shared = sel_registerName(c"sharedApplication".as_ptr().cast());
-        let ns_app = objc_msgSend(ns_app_class, sel_shared);
+        let ns_app = msg_send_id(ns_app_class, sel(c"sharedApplication"));
         if ns_app.is_null() {
             eprintln!("quickshot: NSApplication sharedApplication = null");
             return;
         }
-        // NSApplicationActivationPolicyAccessory = 1
-        let sel_set_policy = sel_registerName(c"setActivationPolicy:".as_ptr().cast());
-        // Argument passed as i64 (policy enum is NSInteger which is 64-bit on all macOS)
-        objc_msgSend(ns_app, sel_set_policy, 1i64);
+        // NSApplicationActivationPolicyAccessory = 1 (NSInteger, 64-bit on macOS).
+        msg_send_set_int(ns_app, sel(c"setActivationPolicy:"), 1);
     }
 }

@@ -6,6 +6,8 @@ mod config;
 mod crop;
 mod file_save;
 mod hotkey;
+#[cfg(target_os = "macos")]
+mod macos_objc;
 mod notification;
 mod overlay;
 mod permission;
