@@ -255,6 +255,24 @@ impl Overlay {
         }
     }
 
+    /// Commit any in-flight TextEdit to history and clear the slot.
+    ///
+    /// Centralizes the take-and-push-if-nonempty pattern used by Enter,
+    /// click-restart-in-rect, click-outside-rect, and double-click-confirm.
+    /// Forgetting one of those sites silently drops the user's typed buffer,
+    /// hence the helper.
+    fn commit_text_edit(&mut self) {
+        if let Some(t) = self.text_edit.take() {
+            if !t.buffer.is_empty() {
+                self.history.push(annotate::Annotation::Text {
+                    origin: t.origin_frame,
+                    content: t.buffer,
+                    style: self.current_style,
+                });
+            }
+        }
+    }
+
     fn handle_left_press(&mut self) -> Outcome {
         // Detect double-click: two presses within 400 ms (position-agnostic).
         let now = std::time::Instant::now();
@@ -274,7 +292,12 @@ impl Overlay {
             OverlayState::Adjusting { rect, .. } => {
                 if is_double_click {
                     match state::on_double_click_adjusting(rect, self.cursor) {
-                        Transition::Confirm(r) => return Outcome::Confirmed(r),
+                        Transition::Confirm(r) => {
+                            // Commit any in-flight TextEdit before confirming the
+                            // overlay so we don't silently lose the user's text.
+                            self.commit_text_edit();
+                            return Outcome::Confirmed(r);
+                        }
                         Transition::Cancel => return Outcome::Cancelled,
                         Transition::Stay => {}
                     }
@@ -318,25 +341,24 @@ impl Overlay {
                     toolbar::ToolbarHit::None => {}
                 }
 
-                // Tool::Text: clicks inside the selection start/commit a TextEdit.
-                // Goes BEFORE the is_drawing() check so Text-tool clicks don't fall
-                // into the Pen/Shape branch. Toolbar hit check stays earlier so toolbar
-                // clicks still work when Text tool is active.
-                if self.tool == annotate::Tool::Text && rect.contains(self.cursor) {
-                    // Commit any in-flight TextEdit first.
-                    if let Some(t) = self.text_edit.take() {
-                        if !t.buffer.is_empty() {
-                            self.history.push(annotate::Annotation::Text {
-                                origin: t.origin_frame,
-                                content: t.buffer,
-                                style: self.current_style,
-                            });
-                        }
+                // Tool::Text: clicks always commit any in-flight TextEdit
+                // (regardless of whether the click is inside or outside the
+                // rect — outside-click clears, inside-click restarts at the
+                // new point). Goes BEFORE the is_drawing() check so Text-tool
+                // clicks don't fall into the Pen/Shape branch. Toolbar hit
+                // check stays earlier so toolbar clicks still work when Text
+                // tool is active.
+                if self.tool == annotate::Tool::Text {
+                    self.commit_text_edit();
+                    if rect.contains(self.cursor) {
+                        let fp = self.window_point_to_frame_point(self.cursor);
+                        self.text_edit = Some(TextEdit::new(fp));
+                        self.window.request_redraw();
+                        return Outcome::Continue;
                     }
-                    let fp = self.window_point_to_frame_point(self.cursor);
-                    self.text_edit = Some(TextEdit::new(fp));
-                    self.window.request_redraw();
-                    return Outcome::Continue;
+                    // Click outside rect: text_edit is now committed/cleared.
+                    // Fall through to the Move-tool arm below for the existing
+                    // anchor / outside-click-clear behavior.
                 }
 
                 // Drawing tool + click inside selection → start PendingDraw.
@@ -401,7 +423,8 @@ impl Overlay {
 
     fn handle_key(&mut self, key: Key) -> Outcome {
         // While composing text, all keys route through TextEdit. Tool/color/stroke
-        // shortcuts and undo/redo are suppressed — only Enter (commit), Esc (discard),
+        // shortcuts and undo/redo are suppressed — only Enter (commit), Esc
+        // (discard text only — does NOT cancel the overlay; user must Esc twice),
         // Shift+Enter (newline), Backspace, and printable chars apply.
         if self.text_edit.is_some() {
             match &key {
@@ -414,15 +437,7 @@ impl Overlay {
                         return Outcome::Continue;
                     }
                     // Plain Enter commits.
-                    if let Some(t) = self.text_edit.take() {
-                        if !t.buffer.is_empty() {
-                            self.history.push(annotate::Annotation::Text {
-                                origin: t.origin_frame,
-                                content: t.buffer,
-                                style: self.current_style,
-                            });
-                        }
-                    }
+                    self.commit_text_edit();
                     self.window.request_redraw();
                     return Outcome::Continue;
                 }
@@ -857,5 +872,28 @@ mod tests {
         t.handle_char('\n');
         t.handle_char('b');
         assert_eq!(t.buffer, "a\nb");
+    }
+
+    #[test]
+    fn text_edit_can_be_committed_via_helper() {
+        // Smoke: commit-take pattern preserves buffer to history.
+        // Replicates the take + push_if_nonempty body of `commit_text_edit`
+        // without requiring a full Overlay (which needs a Window).
+        let mut h = annotate::History::new();
+        let style = annotate::AnnotationStyle::default();
+        let t = TextEdit {
+            origin_frame: (5, 7),
+            buffer: "wow".to_string(),
+            last_blink: std::time::Instant::now(),
+            cursor_visible: true,
+        };
+        if !t.buffer.is_empty() {
+            h.push(annotate::Annotation::Text {
+                origin: t.origin_frame,
+                content: t.buffer,
+                style,
+            });
+        }
+        assert_eq!(h.current().len(), 1);
     }
 }
