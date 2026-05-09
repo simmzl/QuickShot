@@ -508,6 +508,7 @@ impl Overlay {
                     h,
                     &tb,
                     self.tool,
+                    annotate::AnnotationStyle::default(), // TEMPORARY — Task 8 swaps for self.current_style
                     self.history.can_undo(),
                     self.history.can_redo(),
                 );

@@ -1,7 +1,7 @@
 //! Mini toolbar rendered during the Adjusting state. Pure-ish: layout is
 //! pure; drawing is straight softbuffer paints.
 
-use super::annotate::{Color, Stroke, Tool};
+use super::annotate::{AnnotationStyle, Color, Stroke, Tool};
 use super::state::Rect;
 
 /// All toolbar lengths/sizes are in physical pixels at this scale.
@@ -220,23 +220,49 @@ pub fn draw_toolbar(
     win_h: u32,
     toolbar: &Toolbar,
     current_tool: Tool,
+    current_style: AnnotationStyle,
     can_undo: bool,
     can_redo: bool,
 ) {
     draw_pill(buf, win_w, win_h, toolbar.origin, toolbar.size, PILL_RADIUS, 0x000000, 0.7);
 
+    // Row 1.
     for btn in &toolbar.tool_buttons {
         if btn.tool == current_tool {
             draw_pill(buf, win_w, win_h, btn.origin, btn.size, PILL_RADIUS, 0xFFFFFF, 0.25);
         }
         draw_tool_icon(buf, win_w, win_h, btn.tool, btn.origin, 0xFFFFFF);
     }
-
     let undo_color = if can_undo { 0xFFFFFF } else { 0x888888 };
     draw_icon_undo(buf, win_w, win_h, toolbar.undo_button.origin, undo_color);
-
     let redo_color = if can_redo { 0xFFFFFF } else { 0x888888 };
     draw_icon_redo(buf, win_w, win_h, toolbar.redo_button.origin, redo_color);
+
+    // Row 2 — disabled (faded) when Mosaic is active.
+    let row2_alpha: f32 = if current_tool == Tool::Mosaic { 0.4 } else { 1.0 };
+    for btn in &toolbar.color_buttons {
+        let argb = btn.color.argb();
+        let cx = btn.origin.0 + btn.size.0 / 2;
+        let cy = btn.origin.1 + btn.size.1 / 2;
+        let radius = btn.size.0 as f64 / 2.0;
+        // Filled disk (color), faded if Mosaic active.
+        let argb_alpha = mix_argb(argb, 0x000000, 1.0 - row2_alpha);
+        fill_disk(buf, win_w, win_h, cx as f64, cy as f64, radius, argb_alpha);
+        if btn.color == current_style.color && current_tool != Tool::Mosaic {
+            // Active ring: white circle outlining the swatch.
+            stroke_disk(buf, win_w, win_h, cx as f64, cy as f64, radius + 3.0, 2, 0xFFFFFF);
+        }
+    }
+    for btn in &toolbar.stroke_buttons {
+        let cx = btn.origin.0 + btn.size.0 / 2;
+        let cy = btn.origin.1 + btn.size.1 / 2;
+        let dot_r = (btn.stroke.px() * UI_SCALE) as f64 / 2.0;
+        let argb = if current_tool == Tool::Mosaic { 0x666666 } else { 0xFFFFFF };
+        fill_disk(buf, win_w, win_h, cx as f64, cy as f64, dot_r, argb);
+        if btn.stroke == current_style.stroke && current_tool != Tool::Mosaic {
+            stroke_disk(buf, win_w, win_h, cx as f64, cy as f64, dot_r + 4.0, 2, 0xFFFFFF);
+        }
+    }
 }
 
 fn draw_tool_icon(buf: &mut [u32], w: u32, h: u32, tool: Tool, origin: (i32, i32), color: u32) {
@@ -246,9 +272,36 @@ fn draw_tool_icon(buf: &mut [u32], w: u32, h: u32, tool: Tool, origin: (i32, i32
         Tool::Rect => draw_icon_rect(buf, w, h, origin, color),
         Tool::Ellipse => draw_icon_ellipse(buf, w, h, origin, color),
         Tool::Mosaic => draw_icon_mosaic(buf, w, h, origin, color),
-        // Pen / Text icons land in Task 7 — not in TOOL_ORDER yet so unreachable.
-        Tool::Pen | Tool::Text => {}
+        Tool::Pen => draw_icon_pen(buf, w, h, origin, color),
+        Tool::Text => draw_icon_text(buf, w, h, origin, color),
     }
+}
+
+fn draw_icon_pen(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
+    // Diagonal nib: solid line from top-right to bottom-left, with a small
+    // triangle (filled) on the bottom-left tip.
+    let pad = ICON_SIZE / 5;
+    let (x0, y0) = (o.0 + ICON_SIZE - pad, o.1 + pad);
+    let (x1, y1) = (o.0 + pad, o.1 + ICON_SIZE - pad);
+    stroke_line(buf, w, h, x0, y0, x1, y1, STROKE, color);
+    // Small filled triangle (nib) at (x1, y1).
+    let nib = 4 * UI_SCALE;
+    fill_triangle(
+        buf, w, h,
+        (x1 as f64, y1 as f64),
+        ((x1 + nib) as f64, y1 as f64),
+        (x1 as f64, (y1 - nib) as f64),
+        color,
+    );
+}
+
+fn draw_icon_text(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
+    // Capital "T" — horizontal bar on top + vertical bar centered.
+    let pad = ICON_SIZE / 5;
+    let bar_w = ICON_SIZE - 2 * pad;
+    fill_rect(buf, w, h, o.0 + pad, o.1 + pad, bar_w, STROKE, color);
+    let cx = o.0 + ICON_SIZE / 2;
+    fill_rect(buf, w, h, cx - STROKE / 2, o.1 + pad, STROKE, ICON_SIZE - 2 * pad, color);
 }
 
 // All icon drawing is done natively at ICON_SIZE (=66) using filled primitives
@@ -403,6 +456,34 @@ fn fill_disk(buf: &mut [u32], w: u32, h: u32, cx: f64, cy: f64, r: f64, color: u
             }
         }
     }
+}
+
+fn stroke_disk(buf: &mut [u32], w: u32, h: u32, cx: f64, cy: f64, r: f64, thickness: i32, color: u32) {
+    let r_outer = r + thickness as f64 / 2.0;
+    let r_inner = (r - thickness as f64 / 2.0).max(0.0);
+    let r2_o = r_outer * r_outer;
+    let r2_i = r_inner * r_inner;
+    let r_ceil = r_outer.ceil() as i32;
+    for dy in -r_ceil..=r_ceil {
+        for dx in -r_ceil..=r_ceil {
+            let d2 = (dx * dx + dy * dy) as f64;
+            if d2 <= r2_o && d2 >= r2_i {
+                put(buf, w, h, cx as i32 + dx, cy as i32 + dy, color);
+            }
+        }
+    }
+}
+
+fn mix_argb(fg: u32, bg: u32, alpha_to_bg: f32) -> u32 {
+    let lerp = |a: u32, b: u32| {
+        let af = a as f32 * (1.0 - alpha_to_bg);
+        let bf = b as f32 * alpha_to_bg;
+        (af + bf) as u32
+    };
+    let r = lerp((fg >> 16) & 0xFF, (bg >> 16) & 0xFF);
+    let g = lerp((fg >>  8) & 0xFF, (bg >>  8) & 0xFF);
+    let b = lerp( fg        & 0xFF,  bg        & 0xFF);
+    (r << 16) | (g << 8) | b
 }
 
 #[allow(clippy::too_many_arguments)]
