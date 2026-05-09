@@ -91,7 +91,7 @@ pub enum Tool {
 
 impl Tool {
     pub fn is_drawing(self) -> bool {
-        !matches!(self, Tool::Move)
+        !matches!(self, Tool::Move | Tool::Text)
     }
 }
 
@@ -241,7 +241,7 @@ mod tests {
         assert!(Tool::Ellipse.is_drawing());
         assert!(Tool::Mosaic.is_drawing());
         assert!(Tool::Pen.is_drawing());
-        assert!(Tool::Text.is_drawing());
+        assert!(!Tool::Text.is_drawing());
     }
 
     #[test]

@@ -284,12 +284,10 @@ impl Overlay {
                 // Drawing tool + click inside selection → start PendingDraw.
                 if self.tool.is_drawing() && rect.contains(self.cursor) {
                     let fp = self.window_point_to_frame_point(self.cursor);
-                    self.pending_draw = Some(PendingDraw::shape(
-                        self.tool,
-                        self.current_style,
-                        fp,
-                        fp,
-                    ));
+                    self.pending_draw = Some(match self.tool {
+                        annotate::Tool::Pen => PendingDraw::pen(self.current_style, fp),
+                        _ => PendingDraw::shape(self.tool, self.current_style, fp, fp),
+                    });
                     self.window.request_redraw();
                     return Outcome::Continue;
                 }
