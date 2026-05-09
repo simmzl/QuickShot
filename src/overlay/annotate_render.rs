@@ -8,8 +8,6 @@ use image::{Rgba, RgbaImage};
 use super::annotate::Annotation;
 use super::state::Rect;
 
-pub const ANNOTATION_COLOR_RGBA: [u8; 4] = [0xFF, 0x3B, 0x30, 0xFF]; // #FF3B30
-pub const ANNOTATION_THICKNESS: i32 = 6; // 2× the original 3
 pub const ARROWHEAD_LEN: f32 = 28.0; // 2× the original 14
 
 /// Apply an annotation to a CROPPED image. `crop_offset` is the frame-space
@@ -18,32 +16,22 @@ pub const ARROWHEAD_LEN: f32 = 28.0; // 2× the original 14
 pub fn paint_on_cropped(img: &mut RgbaImage, ann: Annotation, crop_offset: (i32, i32)) {
     let (ox, oy) = crop_offset;
     match ann {
-        Annotation::Arrow { from, to } => {
+        Annotation::Arrow { from, to, style } => {
             draw_arrow_on_image(
                 img,
                 (from.0 - ox, from.1 - oy),
                 (to.0 - ox, to.1 - oy),
-                Rgba(ANNOTATION_COLOR_RGBA),
-                ANNOTATION_THICKNESS,
+                Rgba(style.color.rgba()),
+                style.stroke.px(),
             );
         }
-        Annotation::Rect { rect } => {
+        Annotation::Rect { rect, style } => {
             let local = Rect { x: rect.x - ox, y: rect.y - oy, w: rect.w, h: rect.h };
-            draw_rect_outline_on_image(
-                img,
-                local,
-                Rgba(ANNOTATION_COLOR_RGBA),
-                ANNOTATION_THICKNESS,
-            );
+            draw_rect_outline_on_image(img, local, Rgba(style.color.rgba()), style.stroke.px());
         }
-        Annotation::Ellipse { rect } => {
+        Annotation::Ellipse { rect, style } => {
             let local = Rect { x: rect.x - ox, y: rect.y - oy, w: rect.w, h: rect.h };
-            draw_ellipse_outline_on_image(
-                img,
-                local,
-                Rgba(ANNOTATION_COLOR_RGBA),
-                ANNOTATION_THICKNESS,
-            );
+            draw_ellipse_outline_on_image(img, local, Rgba(style.color.rgba()), style.stroke.px());
         }
         Annotation::Mosaic { rect, block_size } => {
             let local = Rect { x: rect.x - ox, y: rect.y - oy, w: rect.w, h: rect.h };
@@ -322,36 +310,37 @@ pub fn draw_annotation_on_buf(
     win_h: u32,
     frame: &RgbaImage,
     ann: Annotation,
-    color_argb: u32,
 ) {
     let frame_size = frame.dimensions();
     let window_size = (win_w, win_h);
-    let thickness_win = window_thickness(ANNOTATION_THICKNESS, frame_size, window_size);
     match ann {
-        Annotation::Arrow { from, to } => {
+        Annotation::Arrow { from, to, style } => {
+            let thickness_win = window_thickness(style.stroke.px(), frame_size, window_size);
             let f = frame_to_window(from, frame_size, window_size);
             let t = frame_to_window(to, frame_size, window_size);
             let shaft_end = shaft_end_point(f, t, ARROWHEAD_LEN as f64);
-            draw_line_thick_buf(buf, win_w, win_h, f, shaft_end, color_argb, thickness_win);
-            draw_arrowhead_buf(buf, win_w, win_h, f, t, color_argb);
+            draw_line_thick_buf(buf, win_w, win_h, f, shaft_end, style.color.argb(), thickness_win);
+            draw_arrowhead_buf(buf, win_w, win_h, f, t, style.color.argb());
         }
-        Annotation::Rect { rect } => {
+        Annotation::Rect { rect, style } => {
+            let thickness_win = window_thickness(style.stroke.px(), frame_size, window_size);
             let tl = frame_to_window((rect.x, rect.y), frame_size, window_size);
             let br = frame_to_window(
                 (rect.x + rect.w - 1, rect.y + rect.h - 1),
                 frame_size,
                 window_size,
             );
-            draw_rect_outline_buf(buf, win_w, win_h, tl, br, color_argb, thickness_win);
+            draw_rect_outline_buf(buf, win_w, win_h, tl, br, style.color.argb(), thickness_win);
         }
-        Annotation::Ellipse { rect } => {
+        Annotation::Ellipse { rect, style } => {
+            let thickness_win = window_thickness(style.stroke.px(), frame_size, window_size);
             let tl = frame_to_window((rect.x, rect.y), frame_size, window_size);
             let br = frame_to_window(
                 (rect.x + rect.w - 1, rect.y + rect.h - 1),
                 frame_size,
                 window_size,
             );
-            draw_ellipse_outline_buf(buf, win_w, win_h, tl, br, color_argb, thickness_win);
+            draw_ellipse_outline_buf(buf, win_w, win_h, tl, br, style.color.argb(), thickness_win);
         }
         Annotation::Mosaic { rect, block_size } => {
             apply_mosaic_on_buf(buf, win_w, win_h, frame, rect, block_size);
@@ -365,10 +354,9 @@ pub fn draw_pending_on_buf(
     win_h: u32,
     frame: &RgbaImage,
     pending: PendingDraw,
-    color_argb: u32,
 ) {
     if let Some(ann) = pending.finalize() {
-        draw_annotation_on_buf(buf, win_w, win_h, frame, ann, color_argb);
+        draw_annotation_on_buf(buf, win_w, win_h, frame, ann);
     }
 }
 
@@ -668,10 +656,14 @@ mod tests {
 
     #[test]
     fn paint_on_cropped_translates() {
+        use super::super::annotate::AnnotationStyle;
         let mut img = RgbaImage::from_pixel(20, 20, Rgba([0u8, 0, 0, 255]));
         paint_on_cropped(
             &mut img,
-            Annotation::Rect { rect: Rect { x: 15, y: 15, w: 5, h: 5 } },
+            Annotation::Rect {
+                rect: Rect { x: 15, y: 15, w: 5, h: 5 },
+                style: AnnotationStyle::default(),
+            },
             (10, 10),
         );
         assert_eq!(img.get_pixel(5, 5).0, [255, 59, 48, 255]);

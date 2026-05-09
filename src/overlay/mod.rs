@@ -17,9 +17,7 @@ use winit::window::{Window, WindowAttributes};
 
 use crate::capture::MonitorGeom;
 use state::{OverlayState, Rect, Transition};
-use annotate::PendingDraw;
-
-const ANNOTATION_ARGB: u32 = 0x00_FF_3B_30; // #FF3B30 (softbuffer 0x00RRGGBB)
+use annotate::{AnnotationStyle, PendingDraw};
 
 /// What `Overlay::handle_event` reports back to the caller after processing
 /// one winit event. Keeps `app.rs` from needing to inspect `OverlayState`.
@@ -268,6 +266,7 @@ impl Overlay {
                         tool: self.tool,
                         from_frame: fp,
                         to_frame: fp,
+                        style: AnnotationStyle::default(),
                     });
                     self.window.request_redraw();
                     return Outcome::Continue;
@@ -470,7 +469,6 @@ impl Overlay {
                     h,
                     frame_ref,
                     *ann,
-                    ANNOTATION_ARGB,
                 );
             }
             if let Some(pending) = self.pending_draw {
@@ -480,7 +478,6 @@ impl Overlay {
                     h,
                     frame_ref,
                     pending,
-                    ANNOTATION_ARGB,
                 );
             }
 

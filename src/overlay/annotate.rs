@@ -70,10 +70,10 @@ impl Default for AnnotationStyle {
 /// of the captured image, matching what the PNG contains).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Annotation {
-    Arrow { from: (i32, i32), to: (i32, i32) },
-    Rect { rect: Rect },
-    Ellipse { rect: Rect },
-    Mosaic { rect: Rect, block_size: u32 },
+    Arrow   { from: (i32, i32), to: (i32, i32), style: AnnotationStyle },
+    Rect    { rect: Rect, style: AnnotationStyle },
+    Ellipse { rect: Rect, style: AnnotationStyle },
+    Mosaic  { rect: Rect, block_size: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +97,7 @@ pub struct PendingDraw {
     pub tool: Tool,
     pub from_frame: (i32, i32),
     pub to_frame: (i32, i32),
+    pub style: AnnotationStyle,
 }
 
 impl PendingDraw {
@@ -109,12 +110,15 @@ impl PendingDraw {
             Tool::Arrow => Some(Annotation::Arrow {
                 from: self.from_frame,
                 to: self.to_frame,
+                style: self.style,
             }),
             Tool::Rect => Some(Annotation::Rect {
                 rect: Rect::normalize(self.from_frame, self.to_frame),
+                style: self.style,
             }),
             Tool::Ellipse => Some(Annotation::Ellipse {
                 rect: Rect::normalize(self.from_frame, self.to_frame),
+                style: self.style,
             }),
             Tool::Mosaic => Some(Annotation::Mosaic {
                 rect: Rect::normalize(self.from_frame, self.to_frame),
@@ -201,6 +205,7 @@ mod tests {
             tool: Tool::Move,
             from_frame: (0, 0),
             to_frame: (10, 10),
+            style: AnnotationStyle::default(),
         };
         assert!(p.finalize().is_none());
     }
@@ -211,13 +216,15 @@ mod tests {
             tool: Tool::Arrow,
             from_frame: (10, 20),
             to_frame: (50, 80),
+            style: AnnotationStyle::default(),
         };
         let a = p.finalize().unwrap();
         assert_eq!(
             a,
             Annotation::Arrow {
                 from: (10, 20),
-                to: (50, 80)
+                to: (50, 80),
+                style: AnnotationStyle::default(),
             }
         );
     }
@@ -228,9 +235,10 @@ mod tests {
             tool: Tool::Rect,
             from_frame: (80, 60),
             to_frame: (20, 10),
+            style: AnnotationStyle::default(),
         };
         match p.finalize().unwrap() {
-            Annotation::Rect { rect } => {
+            Annotation::Rect { rect, .. } => {
                 assert_eq!(rect, Rect { x: 20, y: 10, w: 60, h: 50 });
             }
             _ => panic!("expected Rect"),
@@ -243,9 +251,10 @@ mod tests {
             tool: Tool::Ellipse,
             from_frame: (0, 0),
             to_frame: (30, 40),
+            style: AnnotationStyle::default(),
         };
         match p.finalize().unwrap() {
-            Annotation::Ellipse { rect } => {
+            Annotation::Ellipse { rect, .. } => {
                 assert_eq!(rect, Rect { x: 0, y: 0, w: 30, h: 40 });
             }
             _ => panic!("expected Ellipse"),
@@ -258,6 +267,7 @@ mod tests {
             tool: Tool::Mosaic,
             from_frame: (5, 5),
             to_frame: (50, 50),
+            style: AnnotationStyle::default(),
         };
         match p.finalize().unwrap() {
             Annotation::Mosaic { rect, block_size } => {
@@ -282,6 +292,7 @@ mod tests {
         h.push(Annotation::Arrow {
             from: (0, 0),
             to: (10, 10),
+            style: AnnotationStyle::default(),
         });
         assert!(h.can_undo());
         assert!(!h.can_redo());
@@ -293,6 +304,7 @@ mod tests {
         let mut h = History::new();
         h.push(Annotation::Rect {
             rect: Rect { x: 0, y: 0, w: 10, h: 10 },
+            style: AnnotationStyle::default(),
         });
         assert!(h.undo());
         assert!(!h.can_undo());
@@ -305,6 +317,7 @@ mod tests {
         let mut h = History::new();
         let a = Annotation::Ellipse {
             rect: Rect { x: 5, y: 5, w: 20, h: 20 },
+            style: AnnotationStyle::default(),
         };
         h.push(a);
         h.undo();
@@ -316,10 +329,10 @@ mod tests {
     #[test]
     fn push_after_undo_clears_redo() {
         let mut h = History::new();
-        h.push(Annotation::Arrow { from: (0, 0), to: (5, 5) });
+        h.push(Annotation::Arrow { from: (0, 0), to: (5, 5), style: AnnotationStyle::default() });
         h.undo();
         assert!(h.can_redo());
-        h.push(Annotation::Arrow { from: (10, 10), to: (20, 20) });
+        h.push(Annotation::Arrow { from: (10, 10), to: (20, 20), style: AnnotationStyle::default() });
         assert!(!h.can_redo());
         assert_eq!(h.current().len(), 1);
     }
@@ -334,9 +347,9 @@ mod tests {
     #[test]
     fn multiple_undo_redo() {
         let mut h = History::new();
-        let a = Annotation::Arrow { from: (0, 0), to: (1, 1) };
-        let b = Annotation::Arrow { from: (2, 2), to: (3, 3) };
-        let c = Annotation::Arrow { from: (4, 4), to: (5, 5) };
+        let a = Annotation::Arrow { from: (0, 0), to: (1, 1), style: AnnotationStyle::default() };
+        let b = Annotation::Arrow { from: (2, 2), to: (3, 3), style: AnnotationStyle::default() };
+        let c = Annotation::Arrow { from: (4, 4), to: (5, 5), style: AnnotationStyle::default() };
         h.push(a);
         h.push(b);
         h.push(c);
