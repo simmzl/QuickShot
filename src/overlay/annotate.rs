@@ -2,6 +2,70 @@
 
 use super::state::Rect;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Color {
+    Red,
+    Yellow,
+    Green,
+    Blue,
+}
+
+impl Color {
+    /// softbuffer ARGB layout: 0x00RRGGBB.
+    pub fn argb(self) -> u32 {
+        match self {
+            Color::Red    => 0x00_FF_3B_30,
+            Color::Yellow => 0x00_FF_CC_00,
+            Color::Green  => 0x00_34_C7_59,
+            Color::Blue   => 0x00_00_7A_FF,
+        }
+    }
+    /// `image::Rgba<u8>` payload.
+    pub fn rgba(self) -> [u8; 4] {
+        let argb = self.argb();
+        [
+            ((argb >> 16) & 0xFF) as u8,
+            ((argb >> 8)  & 0xFF) as u8,
+            ( argb        & 0xFF) as u8,
+            0xFF,
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stroke {
+    Thin,
+    Medium,
+    Thick,
+}
+
+impl Stroke {
+    pub fn px(self) -> i32 {
+        match self { Self::Thin => 2, Self::Medium => 4, Self::Thick => 6 }
+    }
+    pub fn font_px(self) -> f32 {
+        match self { Self::Thin => 14.0, Self::Medium => 20.0, Self::Thick => 28.0 }
+    }
+    pub fn step_up(self) -> Self {
+        match self { Self::Thin => Self::Medium, Self::Medium => Self::Thick, Self::Thick => Self::Thick }
+    }
+    pub fn step_down(self) -> Self {
+        match self { Self::Thick => Self::Medium, Self::Medium => Self::Thin, Self::Thin => Self::Thin }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AnnotationStyle {
+    pub color: Color,
+    pub stroke: Stroke,
+}
+
+impl Default for AnnotationStyle {
+    fn default() -> Self {
+        Self { color: Color::Red, stroke: Stroke::Medium }
+    }
+}
+
 /// A single placed annotation, in FRAME-space coordinates (physical pixels
 /// of the captured image, matching what the PNG contains).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,5 +346,50 @@ mod tests {
         assert_eq!(h.current(), &[a]);
         h.redo();
         assert_eq!(h.current(), &[a, b]);
+    }
+
+    #[test]
+    fn color_argb_values() {
+        assert_eq!(Color::Red.argb(),    0x00_FF_3B_30);
+        assert_eq!(Color::Yellow.argb(), 0x00_FF_CC_00);
+        assert_eq!(Color::Green.argb(),  0x00_34_C7_59);
+        assert_eq!(Color::Blue.argb(),   0x00_00_7A_FF);
+    }
+
+    #[test]
+    fn color_rgba_values() {
+        assert_eq!(Color::Red.rgba(),    [0xFF, 0x3B, 0x30, 0xFF]);
+        assert_eq!(Color::Blue.rgba(),   [0x00, 0x7A, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn stroke_px_values() {
+        assert_eq!(Stroke::Thin.px(),    2);
+        assert_eq!(Stroke::Medium.px(),  4);
+        assert_eq!(Stroke::Thick.px(),   6);
+    }
+
+    #[test]
+    fn stroke_font_px_values() {
+        assert_eq!(Stroke::Thin.font_px(),    14.0);
+        assert_eq!(Stroke::Medium.font_px(),  20.0);
+        assert_eq!(Stroke::Thick.font_px(),   28.0);
+    }
+
+    #[test]
+    fn stroke_step() {
+        assert_eq!(Stroke::Thin.step_up(),     Stroke::Medium);
+        assert_eq!(Stroke::Medium.step_up(),   Stroke::Thick);
+        assert_eq!(Stroke::Thick.step_up(),    Stroke::Thick);  // clamped
+        assert_eq!(Stroke::Thick.step_down(),  Stroke::Medium);
+        assert_eq!(Stroke::Medium.step_down(), Stroke::Thin);
+        assert_eq!(Stroke::Thin.step_down(),   Stroke::Thin);   // clamped
+    }
+
+    #[test]
+    fn annotation_style_default_is_red_medium() {
+        let s = AnnotationStyle::default();
+        assert_eq!(s.color,  Color::Red);
+        assert_eq!(s.stroke, Stroke::Medium);
     }
 }
