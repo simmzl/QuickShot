@@ -240,6 +240,7 @@ pub fn draw_toolbar(
 
     // Row 2 — disabled (faded) when Mosaic is active.
     let row2_alpha: f32 = if current_tool == Tool::Mosaic { 0.4 } else { 1.0 };
+    let row2_disabled = current_tool == Tool::Mosaic;
     for btn in &toolbar.color_buttons {
         let argb = btn.color.argb();
         let cx = btn.origin.0 + btn.size.0 / 2;
@@ -248,19 +249,19 @@ pub fn draw_toolbar(
         // Filled disk (color), faded if Mosaic active.
         let argb_alpha = mix_argb(argb, 0x000000, 1.0 - row2_alpha);
         fill_disk(buf, win_w, win_h, cx as f64, cy as f64, radius, argb_alpha);
-        if btn.color == current_style.color && current_tool != Tool::Mosaic {
+        if btn.color == current_style.color && !row2_disabled {
             // Active ring: white circle outlining the swatch.
-            stroke_disk(buf, win_w, win_h, cx as f64, cy as f64, radius + 3.0, 2, 0xFFFFFF);
+            stroke_ellipse(buf, win_w, win_h, cx, cy, radius + 3.0, radius + 3.0, 2, 0xFFFFFF);
         }
     }
     for btn in &toolbar.stroke_buttons {
         let cx = btn.origin.0 + btn.size.0 / 2;
         let cy = btn.origin.1 + btn.size.1 / 2;
         let dot_r = (btn.stroke.px() * UI_SCALE) as f64 / 2.0;
-        let argb = if current_tool == Tool::Mosaic { 0x666666 } else { 0xFFFFFF };
+        let argb = mix_argb(0xFFFFFF, 0x000000, 1.0 - row2_alpha);
         fill_disk(buf, win_w, win_h, cx as f64, cy as f64, dot_r, argb);
-        if btn.stroke == current_style.stroke && current_tool != Tool::Mosaic {
-            stroke_disk(buf, win_w, win_h, cx as f64, cy as f64, dot_r + 4.0, 2, 0xFFFFFF);
+        if btn.stroke == current_style.stroke && !row2_disabled {
+            stroke_ellipse(buf, win_w, win_h, cx, cy, dot_r + 4.0, dot_r + 4.0, 2, 0xFFFFFF);
         }
     }
 }
@@ -452,22 +453,6 @@ fn fill_disk(buf: &mut [u32], w: u32, h: u32, cx: f64, cy: f64, r: f64, color: u
             let fx = dx as f64;
             let fy = dy as f64;
             if fx * fx + fy * fy <= r2 {
-                put(buf, w, h, cx as i32 + dx, cy as i32 + dy, color);
-            }
-        }
-    }
-}
-
-fn stroke_disk(buf: &mut [u32], w: u32, h: u32, cx: f64, cy: f64, r: f64, thickness: i32, color: u32) {
-    let r_outer = r + thickness as f64 / 2.0;
-    let r_inner = (r - thickness as f64 / 2.0).max(0.0);
-    let r2_o = r_outer * r_outer;
-    let r2_i = r_inner * r_inner;
-    let r_ceil = r_outer.ceil() as i32;
-    for dy in -r_ceil..=r_ceil {
-        for dx in -r_ceil..=r_ceil {
-            let d2 = (dx * dx + dy * dy) as f64;
-            if d2 <= r2_o && d2 >= r2_i {
                 put(buf, w, h, cx as i32 + dx, cy as i32 + dy, color);
             }
         }
