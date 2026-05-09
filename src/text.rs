@@ -8,17 +8,21 @@ const FONT_BYTES: &[u8] =
 /// Rasterized glyph cache keyed by `(char, px_size_tenths)` so callers using
 /// integer pt sizes (e.g. 12.0, 14.0) reuse the same bitmap.
 pub struct Font {
-    inner: Option<FontdueFont>,
+    primary: Option<FontdueFont>,
+    cjk_fallback: Option<FontdueFont>,
     cache: HashMap<(char, u32), (fontdue::Metrics, Vec<u8>)>,
 }
 
 impl Font {
-    /// Loads the embedded font. On failure returns a Font whose `render_text`
-    /// is a silent no-op — the UI still works, labels just don't paint.
+    /// Loads the embedded primary font and a best-effort OS-provided CJK
+    /// fallback. On failure of *both*, `render_text` is a silent no-op — the UI
+    /// still works, labels just don't paint.
     pub fn embedded() -> Self {
-        let inner = FontdueFont::from_bytes(FONT_BYTES, FontSettings::default()).ok();
+        let primary = FontdueFont::from_bytes(FONT_BYTES, FontSettings::default()).ok();
+        let cjk_fallback = load_cjk_fallback();
         Self {
-            inner,
+            primary,
+            cjk_fallback,
             cache: HashMap::new(),
         }
     }
@@ -28,11 +32,51 @@ impl Font {
         ch: char,
         px_size: f32,
     ) -> Option<&(fontdue::Metrics, Vec<u8>)> {
-        // Extract `font` before mutably borrowing `self.cache`; split borrows
-        // ensure these are distinct fields and satisfy the borrow checker.
-        let font = self.inner.as_ref()?;
         let key = (ch, (px_size * 10.0) as u32);
-        Some(self.cache.entry(key).or_insert_with(|| font.rasterize(ch, px_size)))
+
+        // Cached path (also catches "previously not found" if we cached an
+        // empty bitmap; render paths skip empty bitmaps explicitly).
+        if self.cache.contains_key(&key) {
+            return self.cache.get(&key);
+        }
+
+        // Try primary first.
+        if let Some(font) = self.primary.as_ref() {
+            let (m, b) = font.rasterize(ch, px_size);
+            if !b.is_empty() {
+                self.cache.insert(key, (m, b));
+                return self.cache.get(&key);
+            }
+        }
+
+        // Primary missing this glyph (or no primary loaded) — try CJK fallback.
+        if let Some(font) = self.cjk_fallback.as_ref() {
+            let (m, b) = font.rasterize(ch, px_size);
+            if !b.is_empty() {
+                self.cache.insert(key, (m, b));
+                return self.cache.get(&key);
+            }
+        }
+
+        // Both fonts missing the glyph — cache an empty result so we don't
+        // re-rasterize every frame. fontdue 0.9 doesn't derive Default for
+        // Metrics / OutlineBounds, so build a zero one manually.
+        let empty = fontdue::Metrics {
+            xmin: 0,
+            ymin: 0,
+            width: 0,
+            height: 0,
+            advance_width: 0.0,
+            advance_height: 0.0,
+            bounds: fontdue::OutlineBounds {
+                xmin: 0.0,
+                ymin: 0.0,
+                width: 0.0,
+                height: 0.0,
+            },
+        };
+        self.cache.insert(key, (empty, Vec::new()));
+        self.cache.get(&key)
     }
 
     /// Draw `text` into the softbuffer `buf` (0x00RRGGBB per pixel) at pen
@@ -53,7 +97,7 @@ impl Font {
         px_size: f32,
         color_rgb: u32,
     ) {
-        if self.inner.is_none() {
+        if self.primary.is_none() && self.cjk_fallback.is_none() {
             return;
         }
         let (fr, fg, fb) = (
@@ -66,6 +110,13 @@ impl Font {
             let Some((metrics, bitmap)) = self.rasterize(ch, px_size).cloned() else {
                 continue;
             };
+            if bitmap.is_empty() {
+                // Glyph missing in both primary and fallback — advance pen by
+                // a reasonable em-width so the rest of the text doesn't
+                // collapse onto one column.
+                pen_x += px_size * 0.5;
+                continue;
+            }
             let gx = pen_x.round() as i32 + metrics.xmin;
             // Fontdue's ymin is measured from the glyph's baseline upwards;
             // to place a "top-left" pen we shift the glyph down by the ascent
@@ -92,7 +143,7 @@ impl Font {
         px_size: f32,
         color: [u8; 4],
     ) {
-        if self.inner.is_none() {
+        if self.primary.is_none() && self.cjk_fallback.is_none() {
             return;
         }
         let mut pen_x = x as f32;
@@ -101,6 +152,10 @@ impl Font {
             let Some((metrics, bitmap)) = self.rasterize(ch, px_size).cloned() else {
                 continue;
             };
+            if bitmap.is_empty() {
+                pen_x += px_size * 0.5;
+                continue;
+            }
             let gx = pen_x.round() as i32 + metrics.xmin;
             let ascent = (px_size * 0.8) as i32;
             let gy = y + ascent - metrics.height as i32 - metrics.ymin;
@@ -129,6 +184,40 @@ impl Font {
             pen_x += metrics.advance_width;
         }
     }
+}
+
+/// Best-effort load of a CJK fallback font from well-known OS paths. Keeps the
+/// binary small (CJK fonts are 10–60 MB) at the cost of needing the host OS to
+/// ship one. Index 0 of a `.ttc` collection is the first face — for
+/// PingFang.ttc that's PingFang SC Regular, which is what we want.
+fn load_cjk_fallback() -> Option<FontdueFont> {
+    #[cfg(target_os = "macos")]
+    let candidates: &[&str] = &[
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    ];
+    #[cfg(target_os = "windows")]
+    let candidates: &[&str] = &[
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\simsun.ttc",
+    ];
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let candidates: &[&str] = &[
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    ];
+
+    for path in candidates {
+        if let Ok(data) = std::fs::read(path) {
+            if let Ok(font) = FontdueFont::from_bytes(data.as_slice(), FontSettings::default()) {
+                eprintln!("quickshot: CJK fallback font loaded from {path}");
+                return Some(font);
+            }
+        }
+    }
+    eprintln!("quickshot: no CJK fallback font found; CJK input will render as tofu");
+    None
 }
 
 // All arguments are primitives for a tight pixel-blending loop; a struct
@@ -176,7 +265,7 @@ mod tests {
     #[test]
     fn font_loads_and_renders_nonzero_pixels() {
         let mut font = Font::embedded();
-        assert!(font.inner.is_some(), "embedded font failed to load");
+        assert!(font.primary.is_some(), "embedded primary font failed to load");
         let (w, h) = (64u32, 32u32);
         let mut buf = vec![0u32; (w * h) as usize];
         font.render_text(&mut buf, w, h, 2, 2, "Hi", 16.0, 0x00FFFFFF);
@@ -189,12 +278,31 @@ mod tests {
     #[test]
     fn missing_font_is_silent_noop() {
         let mut font = Font {
-            inner: None,
+            primary: None,
+            cjk_fallback: None,
             cache: HashMap::new(),
         };
         let (w, h) = (64u32, 32u32);
         let mut buf = vec![0u32; (w * h) as usize];
         font.render_text(&mut buf, w, h, 2, 2, "Hi", 16.0, 0x00FFFFFF);
         assert!(buf.iter().all(|&p| p == 0));
+    }
+
+    #[test]
+    fn cjk_glyph_renders_via_fallback_on_macos() {
+        // Skip on non-macOS where the test machine may not have a CJK font installed.
+        #[cfg(target_os = "macos")]
+        {
+            let mut font = Font::embedded();
+            // 你 (you) — present in PingFang/STHeiti/Hiragino Sans GB, not in
+            // JetBrainsMono.
+            let (w, h) = (64u32, 64u32);
+            let mut buf = vec![0u32; (w * h) as usize];
+            font.render_text(&mut buf, w, h, 2, 2, "你", 24.0, 0x00FFFFFF);
+            assert!(
+                buf.iter().any(|&p| p != 0),
+                "CJK glyph should render via fallback font"
+            );
+        }
     }
 }
