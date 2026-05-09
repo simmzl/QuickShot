@@ -34,48 +34,44 @@ impl Font {
     ) -> Option<&(fontdue::Metrics, Vec<u8>)> {
         let key = (ch, (px_size * 10.0) as u32);
 
-        // Cached path (also catches "previously not found" if we cached an
-        // empty bitmap; render paths skip empty bitmaps explicitly).
         if self.cache.contains_key(&key) {
             return self.cache.get(&key);
         }
 
-        // Try primary first.
+        // Primary path: only use if the font actually has this glyph.
+        // fontdue's rasterize() returns the .notdef glyph (visible tofu box)
+        // for missing characters, so checking bitmap.is_empty() is wrong —
+        // we need to ask the font directly via lookup_glyph_index.
         if let Some(font) = self.primary.as_ref() {
-            let (m, b) = font.rasterize(ch, px_size);
-            if !b.is_empty() {
+            if font.lookup_glyph_index(ch) != 0 {
+                let (m, b) = font.rasterize(ch, px_size);
                 self.cache.insert(key, (m, b));
                 return self.cache.get(&key);
             }
         }
 
-        // Primary missing this glyph (or no primary loaded) — try CJK fallback.
+        // Fallback path: use only if it has the glyph.
         if let Some(font) = self.cjk_fallback.as_ref() {
-            let (m, b) = font.rasterize(ch, px_size);
-            if !b.is_empty() {
+            if font.lookup_glyph_index(ch) != 0 {
+                let (m, b) = font.rasterize(ch, px_size);
                 self.cache.insert(key, (m, b));
                 return self.cache.get(&key);
             }
         }
 
-        // Both fonts missing the glyph — cache an empty result so we don't
-        // re-rasterize every frame. fontdue 0.9 doesn't derive Default for
-        // Metrics / OutlineBounds, so build a zero one manually.
-        let empty = fontdue::Metrics {
-            xmin: 0,
-            ymin: 0,
-            width: 0,
-            height: 0,
-            advance_width: 0.0,
-            advance_height: 0.0,
-            bounds: fontdue::OutlineBounds {
-                xmin: 0.0,
-                ymin: 0.0,
-                width: 0.0,
-                height: 0.0,
+        // Truly missing in both fonts — cache an empty result so render_text
+        // can advance pen_x and skip without re-probing every frame.
+        self.cache.insert(key, (
+            fontdue::Metrics {
+                xmin: 0, ymin: 0, width: 0, height: 0,
+                advance_width: px_size * 0.5,
+                advance_height: 0.0,
+                bounds: fontdue::OutlineBounds {
+                    xmin: 0.0, ymin: 0.0, width: 0.0, height: 0.0,
+                },
             },
-        };
-        self.cache.insert(key, (empty, Vec::new()));
+            Vec::new(),
+        ));
         self.cache.get(&key)
     }
 
@@ -330,6 +326,38 @@ mod tests {
                 buf.iter().any(|&p| p != 0),
                 "CJK glyph should render via fallback font"
             );
+        }
+    }
+
+    #[test]
+    fn primary_notdef_does_not_starve_fallback() {
+        // Regression for: JetBrainsMono's .notdef glyph is a non-empty box,
+        // so a naive "if bitmap is empty, try fallback" gate falsely concludes
+        // primary handled the char. We must use lookup_glyph_index instead.
+        #[cfg(target_os = "macos")]
+        {
+            let mut font = Font::embedded();
+            // Render "h你" — h goes through primary, 你 must go through CJK fallback.
+            // At 32px, 'h' (JetBrainsMono) advances ~19px, so 你 starts around
+            // x≈22 and ends around x≈52. Split the buffer at the post-'h'
+            // pen position so 'h' lands in the left zone and 你 in the right.
+            let (w, h) = (128u32, 64u32);
+            let mut buf = vec![0u32; (w * h) as usize];
+            font.render_text(&mut buf, w, h, 2, 2, "h你", 32.0, 0x00FFFFFF);
+            // 'h' ends well before x=20; 你 starts at x≈22. A split at x=20
+            // puts each glyph cleanly on its own side.
+            let split_x: usize = 20;
+            let mut left_painted = 0;
+            let mut right_painted = 0;
+            for y in 0..h as usize {
+                for x in 0..w as usize {
+                    if buf[y * w as usize + x] != 0 {
+                        if x < split_x { left_painted += 1; } else { right_painted += 1; }
+                    }
+                }
+            }
+            assert!(left_painted > 0, "primary 'h' produced no pixels");
+            assert!(right_painted > 0, "fallback '你' produced no pixels (CJK fallback starved by primary .notdef)");
         }
     }
 }
