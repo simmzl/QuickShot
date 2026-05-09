@@ -312,7 +312,7 @@ fn put_clamped(img: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, color: Rgba<
 use super::annotate::PendingDraw;
 
 /// Map a frame-space point to a window-space point.
-fn frame_to_window(p: (i32, i32), frame_size: (u32, u32), window_size: (u32, u32)) -> (i32, i32) {
+pub(crate) fn frame_to_window(p: (i32, i32), frame_size: (u32, u32), window_size: (u32, u32)) -> (i32, i32) {
     let (fw, fh) = (frame_size.0.max(1) as i64, frame_size.1.max(1) as i64);
     let (ww, wh) = (window_size.0.max(1) as i64, window_size.1.max(1) as i64);
     let x = (p.0 as i64 * ww / fw) as i32;

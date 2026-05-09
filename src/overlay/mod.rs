@@ -31,6 +31,11 @@ pub enum Outcome {
 pub(crate) struct TextEdit {
     pub origin_frame: (i32, i32),
     pub buffer: String,
+    /// In-flight IME preedit (pinyin / candidate composition string). Owned by
+    /// the IME — we never mutate this from key handling, only from
+    /// `WindowEvent::Ime`. Rendered alongside `buffer` so the user sees what
+    /// they're typing before they confirm a candidate.
+    pub preedit: String,
     pub last_blink: std::time::Instant,
     pub cursor_visible: bool,
 }
@@ -40,6 +45,7 @@ impl TextEdit {
         Self {
             origin_frame,
             buffer: String::new(),
+            preedit: String::new(),
             last_blink: std::time::Instant::now(),
             cursor_visible: true,
         }
@@ -159,6 +165,10 @@ impl Overlay {
 
         let scale_factor = window.scale_factor() as f32;
         let window = Rc::new(window);
+        // Opt into IME events so winit forwards `WindowEvent::Ime` for CJK /
+        // dead-key composition. Without this, only `Key::Character` fires and
+        // CJK input from the OS-level IME is silently dropped.
+        window.set_ime_allowed(true);
         let context = SoftContext::new(window.clone()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
         let surface =
             Surface::new(&context, window.clone()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
@@ -248,6 +258,31 @@ impl Overlay {
             }
             WindowEvent::ModifiersChanged(new_mods) => {
                 self.modifiers = new_mods.state();
+                Outcome::Continue
+            }
+            WindowEvent::Ime(ime_event) => {
+                use winit::event::Ime;
+                if let Some(t) = self.text_edit.as_mut() {
+                    match ime_event {
+                        Ime::Commit(s) => {
+                            // IME confirmed candidate(s) — append to buffer and
+                            // clear preedit. winit guarantees Commit and
+                            // Key::Character don't both fire for the same input.
+                            t.buffer.push_str(&s);
+                            t.preedit.clear();
+                            self.window.request_redraw();
+                        }
+                        Ime::Preedit(s, _cursor) => {
+                            // In-flight composition (pinyin etc). Render alongside
+                            // buffer so the user sees what they're typing.
+                            t.preedit = s;
+                            self.window.request_redraw();
+                        }
+                        Ime::Enabled | Ime::Disabled => {
+                            // Informational — nothing to do.
+                        }
+                    }
+                }
                 Outcome::Continue
             }
             WindowEvent::CloseRequested => Outcome::Cancelled,
@@ -674,15 +709,43 @@ impl Overlay {
                 }
             }
             if let Some(t) = self.text_edit.as_ref() {
-                let display: String = if t.cursor_visible {
-                    format!("{}|", t.buffer)
-                } else {
-                    t.buffer.clone()
-                };
+                // Display = committed buffer + in-flight IME preedit + caret.
+                // Preedit is rendered inline so the user can see CJK composition
+                // (pinyin, candidates) before they confirm.
+                let mut display = String::with_capacity(
+                    t.buffer.len() + t.preedit.len() + 1,
+                );
+                display.push_str(&t.buffer);
+                display.push_str(&t.preedit);
+                if t.cursor_visible {
+                    display.push('|');
+                }
                 let origin = t.origin_frame;
                 annotate_render::draw_text_on_buf(
                     &mut buf, w, h, frame_ref, origin, &display,
                     self.current_style, font,
+                );
+                // Position the IME candidate window roughly under the caret so
+                // macOS doesn't park it at an arbitrary corner. We give the
+                // bottom-left of the first text line: origin_frame mapped to
+                // window-space, offset down by ~one line height. Approximate
+                // sizing is fine — system IME treats this as a hint.
+                let frame_size = frame_ref.dimensions();
+                let window_size = (w, h);
+                let scale_y = window_size.1 as f32 / frame_size.1.max(1) as f32;
+                let line_h = (self.current_style.stroke.font_px() * scale_y)
+                    .round()
+                    .max(1.0) as i32;
+                let (cx, cy) = annotate_render::frame_to_window(
+                    origin, frame_size, window_size,
+                );
+                self.window.set_ime_cursor_area(
+                    winit::dpi::Position::Physical(
+                        winit::dpi::PhysicalPosition::new(cx, cy + line_h),
+                    ),
+                    winit::dpi::Size::Physical(
+                        winit::dpi::PhysicalSize::new(1, 1),
+                    ),
                 );
             }
 
@@ -897,6 +960,7 @@ mod tests {
         let t = TextEdit {
             origin_frame: (5, 7),
             buffer: "wow".to_string(),
+            preedit: String::new(),
             last_blink: std::time::Instant::now(),
             cursor_visible: true,
         };
