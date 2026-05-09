@@ -44,7 +44,7 @@ impl Stroke {
         match self { Self::Thin => 2, Self::Medium => 4, Self::Thick => 6 }
     }
     pub fn font_px(self) -> f32 {
-        match self { Self::Thin => 14.0, Self::Medium => 20.0, Self::Thick => 28.0 }
+        match self { Self::Thin => 24.0, Self::Medium => 40.0, Self::Thick => 64.0 }
     }
     pub fn step_up(self) -> Self {
         match self { Self::Thin => Self::Medium, Self::Medium => Self::Thick, Self::Thick => Self::Thick }
@@ -450,9 +450,9 @@ mod tests {
 
     #[test]
     fn stroke_font_px_values() {
-        assert_eq!(Stroke::Thin.font_px(),    14.0);
-        assert_eq!(Stroke::Medium.font_px(),  20.0);
-        assert_eq!(Stroke::Thick.font_px(),   28.0);
+        assert_eq!(Stroke::Thin.font_px(),    24.0);
+        assert_eq!(Stroke::Medium.font_px(),  40.0);
+        assert_eq!(Stroke::Thick.font_px(),   64.0);
     }
 
     #[test]

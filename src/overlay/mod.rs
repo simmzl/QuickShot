@@ -454,6 +454,19 @@ impl Overlay {
                     return Outcome::Continue;
                 }
                 Key::Character(s) => {
+                    // Stroke (font-size) shortcuts stay live during composition so
+                    // the user can adjust text size mid-edit. Other shortcuts
+                    // (tool, color, undo) remain suppressed — only [/] are special.
+                    let ch = s.chars().next().unwrap_or('\0');
+                    if ch == '[' || ch == ']' {
+                        self.current_style.stroke = if ch == '[' {
+                            self.current_style.stroke.step_down()
+                        } else {
+                            self.current_style.stroke.step_up()
+                        };
+                        self.window.request_redraw();
+                        return Outcome::Continue;
+                    }
                     if let Some(t) = self.text_edit.as_mut() {
                         for ch in s.chars() {
                             t.handle_char(ch);
