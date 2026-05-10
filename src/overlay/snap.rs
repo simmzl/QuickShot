@@ -30,6 +30,8 @@ pub fn enumerate_windows(monitor_geom: &MonitorGeom, my_pid: u32) -> Vec<WindowE
     const KCG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1 << 0; // 0x01
     const KCG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4; // 0x10
     const KCG_NULL_WINDOW_ID: u32 = 0;
+    /// Drop windows smaller than this (notification dots, badges, menu items).
+    const MIN_WINDOW_DIMENSION_PX: f64 = 50.0;
 
     extern "C" {
         fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> CFArrayRef;
@@ -53,25 +55,29 @@ pub fn enumerate_windows(monitor_geom: &MonitorGeom, my_pid: u32) -> Vec<WindowE
     for dict_item in array.iter() {
         let dict = &*dict_item;
 
-        let pid = read_i64(dict, "kCGWindowOwnerPID").unwrap_or(0);
-        if pid as u32 == my_pid {
+        // Missing pid / layer / bounds field → drop this window. CG should
+        // always populate them for an on-screen window, so absence likely means
+        // a transient or partially-initialized entry we don't want to snap to.
+        let Some(pid) = read_i64(dict, "kCGWindowOwnerPID") else { continue };
+        if pid <= 0 || pid as u64 != my_pid as u64 {
+            // Not our overlay — proceed.
+        } else {
             continue;
         }
 
-        let layer = read_i64(dict, "kCGWindowLayer").unwrap_or(i64::MIN) as i32;
+        let Some(layer) = read_i64(dict, "kCGWindowLayer") else { continue };
         if layer != 0 {
             continue;
         }
+        let layer = layer as i32;
 
-        let Some(bounds_dict) = read_dict(dict, "kCGWindowBounds") else {
-            continue;
-        };
-        let cg_x = read_f64(&bounds_dict, "X").unwrap_or(0.0);
-        let cg_y = read_f64(&bounds_dict, "Y").unwrap_or(0.0);
-        let cg_w = read_f64(&bounds_dict, "Width").unwrap_or(0.0);
-        let cg_h = read_f64(&bounds_dict, "Height").unwrap_or(0.0);
+        let Some(bounds_dict) = read_dict(dict, "kCGWindowBounds") else { continue };
+        let Some(cg_x) = read_f64(&bounds_dict, "X") else { continue };
+        let Some(cg_y) = read_f64(&bounds_dict, "Y") else { continue };
+        let Some(cg_w) = read_f64(&bounds_dict, "Width") else { continue };
+        let Some(cg_h) = read_f64(&bounds_dict, "Height") else { continue };
 
-        if cg_w < 50.0 || cg_h < 50.0 {
+        if cg_w < MIN_WINDOW_DIMENSION_PX || cg_h < MIN_WINDOW_DIMENSION_PX {
             continue;
         }
 
