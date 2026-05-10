@@ -747,6 +747,20 @@ impl Overlay {
 
         let sel_tuple = self.current_selection_rect_window();
         let sel_rect = self.current_selection_rect();
+        // Snap preview: when Idle and hovering a window, render that window's
+        // bounds the same way as a confirmed selection but with a blue outline.
+        let (sel_rect, sel_tuple, outline_color) = match (sel_rect, &self.state, self.snap_target) {
+            (None, OverlayState::Idle, Some(snap)) => {
+                let clamped = snap.clamp_to((w, h));
+                if clamped.w == 0 || clamped.h == 0 {
+                    (None, None, 0x00FFFFFF)
+                } else {
+                    let tup = clamped.as_tuple_u32();
+                    (Some(clamped), Some(tup), 0x00007AFF) // Color::Blue
+                }
+            }
+            (existing, _, _) => (existing, sel_tuple, 0x00FFFFFF),
+        };
         let show_label = matches!(
             self.state,
             OverlayState::Dragging { .. } | OverlayState::Adjusting { .. }
@@ -770,7 +784,7 @@ impl Overlay {
         render::draw_background(&mut buf, w, h, frame_ref);
         render::apply_dim(&mut buf, w, h, sel_tuple);
         if let Some(r) = sel_tuple {
-            render::draw_selection_outline(&mut buf, w, h, r, 0x00FFFFFF);
+            render::draw_selection_outline(&mut buf, w, h, r, outline_color);
         }
         if let OverlayState::Adjusting { .. } = self.state {
             // Annotations first (committed history, then in-flight pending).
