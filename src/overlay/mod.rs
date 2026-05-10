@@ -483,6 +483,9 @@ impl Overlay {
                     }
                     hit::HitZone::Outside => {
                         self.state = OverlayState::Idle;
+                        self.snap_target = None;
+                        self.press_pos = None;
+                        self.snap_at_press = None;
                         self.window.request_redraw();
                     }
                 }
@@ -522,6 +525,9 @@ impl Overlay {
                     self.state = OverlayState::Adjusting { rect, edit: None };
                 } else {
                     self.state = OverlayState::Idle;
+                    // Snap state could have lingered if Dragging was promoted
+                    // mid-press; clear so hover-snap restarts cleanly.
+                    self.snap_target = None;
                 }
                 self.window.request_redraw();
             }
