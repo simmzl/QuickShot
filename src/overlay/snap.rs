@@ -59,9 +59,13 @@ pub fn enumerate_windows(monitor_geom: &MonitorGeom, my_pid: u32) -> Vec<WindowE
         // always populate them for an on-screen window, so absence likely means
         // a transient or partially-initialized entry we don't want to snap to.
         let Some(pid) = read_i64(dict, "kCGWindowOwnerPID") else { continue };
-        if pid <= 0 || pid as u64 != my_pid as u64 {
-            // Not our overlay — proceed.
-        } else {
+        // Defensive: real CG windows always have positive pids. A zero or
+        // negative pid means a transient / corrupt entry we don't want to snap.
+        if pid <= 0 {
+            continue;
+        }
+        // Skip our own overlay window so we don't snap to ourselves.
+        if pid as u64 == my_pid as u64 {
             continue;
         }
 
