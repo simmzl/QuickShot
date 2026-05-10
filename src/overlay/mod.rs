@@ -372,8 +372,12 @@ impl Overlay {
 
         match self.state {
             OverlayState::Idle => {
-                self.state = state::on_mouse_down_idle(self.cursor);
-                self.window.request_redraw();
+                // Defer state transition until release. If the cursor moves
+                // ≥ 4 px before release, CursorMoved promotes to Dragging
+                // (Task 6). If release happens with no movement, we treat it
+                // as a click — commit snap_target to Adjusting (handle_left_release).
+                self.press_pos = Some(self.cursor);
+                self.snap_at_press = self.snap_target;
                 Outcome::Continue
             }
             OverlayState::Dragging { .. } => Outcome::Continue,
@@ -487,6 +491,20 @@ impl Overlay {
                 self.history.push(ann);
             }
             self.window.request_redraw();
+            return Outcome::Continue;
+        }
+
+        // Snap-click commit: if a press happened in Idle and CursorMoved never
+        // promoted to Dragging (drag threshold not exceeded), treat this as a
+        // click. Snap to the window the cursor was over at press time.
+        if self.press_pos.take().is_some() {
+            if let Some(rect) = self.snap_at_press.take() {
+                self.state = OverlayState::Adjusting { rect, edit: None };
+                self.snap_target = None;  // clear stale hover highlight
+                self.window.request_redraw();
+            }
+            // Else: clicked on dim area (no window under cursor at press time)
+            // — stay Idle, no transition.
             return Outcome::Continue;
         }
 
