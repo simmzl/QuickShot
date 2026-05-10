@@ -329,6 +329,13 @@ impl Overlay {
                 }
                 Outcome::Continue
             }
+            WindowEvent::CursorLeft { .. } => {
+                if self.snap_target.is_some() {
+                    self.snap_target = None;
+                    self.window.request_redraw();
+                }
+                Outcome::Continue
+            }
             WindowEvent::CloseRequested => Outcome::Cancelled,
             _ => Outcome::Continue,
         }
