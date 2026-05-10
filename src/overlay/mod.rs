@@ -2,6 +2,7 @@ pub(crate) mod annotate;
 pub(crate) mod annotate_render;
 pub(crate) mod hit;
 pub(crate) mod render;
+pub(crate) mod snap;
 pub(crate) mod state;
 pub(crate) mod toolbar;
 
