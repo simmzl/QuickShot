@@ -101,6 +101,11 @@ pub struct Overlay {
     /// toolbar. Toggled by `h` while in Adjusting state, dismissed by Esc or
     /// any mouse click.
     pub(crate) show_hints: bool,
+    // Iter 6a: smart window snapping state.
+    pub(crate) snap_target: Option<Rect>,
+    pub(crate) press_pos: Option<(i32, i32)>,
+    pub(crate) snap_at_press: Option<Rect>,
+    window_list: Vec<snap::WindowEntry>,
 }
 
 impl Overlay {
@@ -195,6 +200,13 @@ impl Overlay {
             text_edit: None,
             modifiers: ModifiersState::default(),
             show_hints: false,
+            // Iter 6a: enumerate windows once at overlay creation. Captures
+            // are sub-second so window topology is effectively frozen for
+            // the duration; no need to refresh.
+            snap_target: None,
+            press_pos: None,
+            snap_at_press: None,
+            window_list: snap::enumerate_windows(monitor_geom, std::process::id()),
         })
     }
 
