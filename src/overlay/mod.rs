@@ -242,8 +242,34 @@ impl Overlay {
                         self.window.set_cursor(icon);
                     }
                     OverlayState::Idle => {
-                        // Magnifier follows cursor while idle; throttle to ~60 Hz.
-                        self.request_redraw_throttled();
+                        if let Some(start) = self.press_pos {
+                            // Mouse held — check drag threshold to decide
+                            // click-to-snap vs drag-to-rect.
+                            if snap::drag_threshold_exceeded(start, self.cursor) {
+                                // Promote: use press position as the rect's start
+                                // so the user's click point anchors the drag.
+                                self.state = OverlayState::Dragging {
+                                    start,
+                                    end: self.cursor,
+                                };
+                                self.snap_target = None;
+                                self.press_pos = None;
+                                self.snap_at_press = None;
+                                self.window.request_redraw();
+                            }
+                        } else {
+                            // Hover-snap: recompute snap_target from cursor.
+                            let new_target = snap::window_under_cursor(
+                                self.cursor,
+                                &self.window_list,
+                            );
+                            if new_target != self.snap_target {
+                                self.snap_target = new_target;
+                                self.window.request_redraw();
+                            }
+                            // Magnifier tick — preserves Iter 2a behavior.
+                            self.request_redraw_throttled();
+                        }
                     }
                 }
                 Outcome::Continue
