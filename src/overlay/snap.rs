@@ -148,6 +148,13 @@ pub fn enumerate_windows(_monitor_geom: &MonitorGeom, _my_pid: u32) -> Vec<Windo
     Vec::new()
 }
 
+/// Returns true if the cursor has moved at least 4 pixels (Manhattan
+/// distance) from the press position. Used to disambiguate "click on a
+/// window to snap" from "drag a rectangle".
+pub fn drag_threshold_exceeded(start: (i32, i32), now: (i32, i32)) -> bool {
+    (now.0 - start.0).abs() + (now.1 - start.1).abs() >= 4
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,5 +211,35 @@ mod tests {
             !entries.is_empty(),
             "expected at least one window in the list on macOS",
         );
+    }
+
+    #[test]
+    fn drag_threshold_at_zero_is_false() {
+        assert!(!drag_threshold_exceeded((0, 0), (0, 0)));
+    }
+
+    #[test]
+    fn drag_threshold_under_4_is_false() {
+        assert!(!drag_threshold_exceeded((0, 0), (1, 1)));
+        assert!(!drag_threshold_exceeded((0, 0), (3, 0)));
+        assert!(!drag_threshold_exceeded((0, 0), (0, 3)));
+        assert!(!drag_threshold_exceeded((0, 0), (1, 2)));
+    }
+
+    #[test]
+    fn drag_threshold_at_or_over_4_is_true() {
+        assert!(drag_threshold_exceeded((0, 0), (4, 0)));
+        assert!(drag_threshold_exceeded((0, 0), (0, 4)));
+        assert!(drag_threshold_exceeded((0, 0), (2, 2)));
+        assert!(drag_threshold_exceeded((10, 10), (12, 12)));
+    }
+
+    #[test]
+    fn drag_threshold_works_with_negative_motion() {
+        // |Δx| + |Δy| uses .abs(), so cursor moving up-left also counts.
+        assert!(drag_threshold_exceeded((10, 10), (6, 10)));
+        assert!(drag_threshold_exceeded((10, 10), (10, 6)));
+        assert!(drag_threshold_exceeded((10, 10), (8, 8)));
+        assert!(!drag_threshold_exceeded((10, 10), (9, 9)));
     }
 }
