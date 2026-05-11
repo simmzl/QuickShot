@@ -24,7 +24,6 @@ pub struct PinWindow {
     press_pos: Option<(i32, i32)>,
     win_pos_at_press: Option<(i32, i32)>,
     last_cursor: Option<(i32, i32)>,
-    #[allow(dead_code)]
     last_click: Option<Instant>,
 }
 
@@ -156,7 +155,18 @@ impl PinWindow {
                 button: MouseButton::Left,
                 ..
             } => {
-                // Single-press: record state for drag detection.
+                // Double-click detection: two Pressed events within 400 ms
+                // (position-agnostic, matches Iter 2a overlay convention).
+                let now = std::time::Instant::now();
+                let is_double_click = matches!(
+                    self.last_click,
+                    Some(t) if now.duration_since(t) < std::time::Duration::from_millis(400)
+                );
+                self.last_click = Some(now);
+                if is_double_click {
+                    return PinOutcome::Closed;
+                }
+                // Single press: record state for drag detection.
                 self.press_pos = self.last_cursor;
                 let outer = self
                     .window
