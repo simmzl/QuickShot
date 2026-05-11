@@ -22,7 +22,11 @@ pub fn window_under_cursor(cursor: (i32, i32), entries: &[WindowEntry]) -> Optio
 }
 
 #[cfg(target_os = "macos")]
-pub fn enumerate_windows(monitor_geom: &MonitorGeom, my_pid: u32) -> Vec<WindowEntry> {
+pub fn enumerate_windows(
+    monitor_geom: &MonitorGeom,
+    my_pid: u32,
+    scale_factor: f32,
+) -> Vec<WindowEntry> {
     use core_foundation::array::{CFArray, CFArrayRef};
     use core_foundation::base::TCFType;
     use core_foundation::dictionary::CFDictionary;
@@ -31,11 +35,18 @@ pub fn enumerate_windows(monitor_geom: &MonitorGeom, my_pid: u32) -> Vec<WindowE
     const KCG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS: u32 = 1 << 4; // 0x10
     const KCG_NULL_WINDOW_ID: u32 = 0;
     /// Drop windows smaller than this (notification dots, badges, menu items).
+    /// Logical points — applies pre-scale, so a "small badge" stays small
+    /// regardless of display DPI.
     const MIN_WINDOW_DIMENSION_PX: f64 = 50.0;
 
     extern "C" {
         fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> CFArrayRef;
     }
+
+    eprintln!(
+        "quickshot: snap enumeration: monitor_geom=({}, {}, {}x{}) scale={}",
+        monitor_geom.x, monitor_geom.y, monitor_geom.width, monitor_geom.height, scale_factor,
+    );
 
     let option =
         KCG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY | KCG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS;
@@ -85,18 +96,31 @@ pub fn enumerate_windows(monitor_geom: &MonitorGeom, my_pid: u32) -> Vec<WindowE
             continue;
         }
 
-        let local_x = (cg_x as i32) - monitor_geom.x;
-        let local_y = (cg_y as i32) - monitor_geom.y;
+        // CG returns bounds in points (logical units). winit's cursor and the
+        // softbuffer are in physical pixels, so multiply by scale_factor to
+        // bring window bounds into the same unit.
+        let local_logical_x = cg_x - monitor_geom.x as f64;
+        let local_logical_y = cg_y - monitor_geom.y as f64;
+        let local_x = (local_logical_x * scale_factor as f64).round() as i32;
+        let local_y = (local_logical_y * scale_factor as f64).round() as i32;
+        let phys_w = (cg_w * scale_factor as f64).round() as i32;
+        let phys_h = (cg_h * scale_factor as f64).round() as i32;
 
         out.push(WindowEntry {
             bounds: Rect {
                 x: local_x,
                 y: local_y,
-                w: cg_w as i32,
-                h: cg_h as i32,
+                w: phys_w,
+                h: phys_h,
             },
             layer,
         });
+
+        eprintln!(
+            "quickshot: snap window: cg=({}, {}, {}x{}) → win=({}, {}, {}x{}) layer={}",
+            cg_x as i32, cg_y as i32, cg_w as i32, cg_h as i32,
+            local_x, local_y, phys_w, phys_h, layer,
+        );
     }
 
     out
@@ -144,7 +168,11 @@ fn read_dict(
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn enumerate_windows(_monitor_geom: &MonitorGeom, _my_pid: u32) -> Vec<WindowEntry> {
+pub fn enumerate_windows(
+    _monitor_geom: &MonitorGeom,
+    _my_pid: u32,
+    _scale_factor: f32,
+) -> Vec<WindowEntry> {
     Vec::new()
 }
 
@@ -206,7 +234,7 @@ mod tests {
         // window (Finder, Terminal, IDE…). Smoke test only — exact contents
         // depend on the test machine.
         let geom = MonitorGeom { x: 0, y: 0, width: 1920, height: 1080 };
-        let entries = enumerate_windows(&geom, std::process::id());
+        let entries = enumerate_windows(&geom, std::process::id(), 1.0);
         assert!(
             !entries.is_empty(),
             "expected at least one window in the list on macOS",

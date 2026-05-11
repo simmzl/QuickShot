@@ -206,7 +206,7 @@ impl Overlay {
             snap_target: None,
             press_pos: None,
             snap_at_press: None,
-            window_list: snap::enumerate_windows(monitor_geom, std::process::id()),
+            window_list: snap::enumerate_windows(monitor_geom, std::process::id(), scale_factor),
         })
     }
 
