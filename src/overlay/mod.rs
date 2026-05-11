@@ -472,36 +472,40 @@ impl Overlay {
                     // anchor / outside-click-clear behavior.
                 }
 
-                // Drawing tool + click inside selection → start PendingDraw.
-                if self.tool.is_drawing() && rect.contains(self.cursor) {
-                    let fp = self.window_point_to_frame_point(self.cursor);
-                    self.pending_draw = Some(match self.tool {
-                        annotate::Tool::Pen => PendingDraw::pen(self.current_style, fp),
-                        _ => PendingDraw::shape(self.tool, self.current_style, fp, fp),
-                    });
-                    self.window.request_redraw();
-                    return Outcome::Continue;
-                }
-
-                // Move tool: existing Iter 2a behavior (anchor resize / translate / clear).
+                // Hit-test the cursor against the selection rect first. The
+                // anchor zone (border) is a universal resize affordance — works
+                // regardless of the active tool. Inside-the-rect dispatches by
+                // tool (draw vs. translate). Outside is inert: only Esc and
+                // double-click exit the overlay.
                 match hit::classify(self.cursor, rect) {
                     hit::HitZone::Anchor(a) => {
                         self.state = state::start_resize(rect, a, self.cursor);
                         self.window.request_redraw();
+                        return Outcome::Continue;
                     }
                     hit::HitZone::Inside => {
+                        if self.tool.is_drawing() {
+                            // Drawing tool inside rect → start PendingDraw.
+                            let fp = self.window_point_to_frame_point(self.cursor);
+                            self.pending_draw = Some(match self.tool {
+                                annotate::Tool::Pen => PendingDraw::pen(self.current_style, fp),
+                                _                   => PendingDraw::shape(
+                                    self.tool, self.current_style, fp, fp,
+                                ),
+                            });
+                            self.window.request_redraw();
+                            return Outcome::Continue;
+                        }
+                        // Move tool inside rect → start translate.
                         self.state = state::start_translate(rect, self.cursor);
                         self.window.request_redraw();
+                        return Outcome::Continue;
                     }
                     hit::HitZone::Outside => {
-                        self.state = OverlayState::Idle;
-                        self.snap_target = None;
-                        self.press_pos = None;
-                        self.snap_at_press = None;
-                        self.window.request_redraw();
+                        // No-op. Stay in Adjusting; only Esc / double-click exit.
+                        return Outcome::Continue;
                     }
                 }
-                Outcome::Continue
             }
         }
     }
