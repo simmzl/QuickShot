@@ -615,6 +615,28 @@ fn put(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, color: u32) {
     }
 }
 
+/// Write `color` at (x, y) blended with the existing pixel by `coverage`
+/// (0.0 = transparent, 1.0 = fully opaque). Clips to buffer bounds.
+fn put_blend(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, color: u32, coverage: f32) {
+    if coverage <= 0.0 || x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
+        return;
+    }
+    let idx = (y as u32 * w + x as u32) as usize;
+    let bg = buf[idx];
+    let a = coverage.clamp(0.0, 1.0);
+    let inv = 1.0 - a;
+    let fr = ((color >> 16) & 0xFF) as f32;
+    let fg = ((color >> 8) & 0xFF) as f32;
+    let fb = (color & 0xFF) as f32;
+    let br = ((bg >> 16) & 0xFF) as f32;
+    let bgc = ((bg >> 8) & 0xFF) as f32;
+    let bb = (bg & 0xFF) as f32;
+    let r = (fr * a + br * inv) as u32;
+    let g = (fg * a + bgc * inv) as u32;
+    let b = (fb * a + bb * inv) as u32;
+    buf[idx] = (r << 16) | (g << 8) | b;
+}
+
 #[allow(clippy::too_many_arguments)]
 fn fill_rect(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, rw: i32, rh: i32, color: u32) {
     for dy in 0..rh {
@@ -645,14 +667,22 @@ fn stroke_rect(
 }
 
 fn fill_disk(buf: &mut [u32], w: u32, h: u32, cx: f64, cy: f64, r: f64, color: u32) {
-    let r_ceil = r.ceil() as i32;
-    let r2 = r * r;
+    if r <= 0.0 { return; }
+    let r_ceil = (r + 1.0).ceil() as i32;
+    let cx_i = cx.round() as i32;
+    let cy_i = cy.round() as i32;
+    let cx_f = cx - cx_i as f64;
+    let cy_f = cy - cy_i as f64;
     for dy in -r_ceil..=r_ceil {
         for dx in -r_ceil..=r_ceil {
-            let fx = dx as f64;
-            let fy = dy as f64;
-            if fx * fx + fy * fy <= r2 {
-                put(buf, w, h, cx as i32 + dx, cy as i32 + dy, color);
+            let fx = dx as f64 - cx_f;
+            let fy = dy as f64 - cy_f;
+            let d = (fx * fx + fy * fy).sqrt();
+            // Linear coverage at the edge: 1.0 well inside, 0.0 well outside,
+            // ramp over a 1-pixel band centered on the boundary.
+            let coverage = (r + 0.5 - d).clamp(0.0, 1.0) as f32;
+            if coverage > 0.0 {
+                put_blend(buf, w, h, cx_i + dx, cy_i + dy, color, coverage);
             }
         }
     }
@@ -735,11 +765,25 @@ fn fill_triangle(
     let max_x = p0.0.max(p1.0).max(p2.0).ceil() as i32;
     let min_y = p0.1.min(p1.1).min(p2.1).floor() as i32;
     let max_y = p0.1.max(p1.1).max(p2.1).ceil() as i32;
+    // 4×4 supersample grid per pixel.
+    const N: i32 = 4;
+    let step = 1.0 / N as f64;
+    let offset = step / 2.0;
     for y in min_y..=max_y {
         for x in min_x..=max_x {
-            let pf = (x as f64 + 0.5, y as f64 + 0.5);
-            if point_in_triangle(pf, p0, p1, p2) {
-                put(buf, w, h, x, y, color);
+            let mut hits = 0i32;
+            for sy in 0..N {
+                for sx in 0..N {
+                    let px = x as f64 + offset + sx as f64 * step;
+                    let py = y as f64 + offset + sy as f64 * step;
+                    if point_in_triangle((px, py), p0, p1, p2) {
+                        hits += 1;
+                    }
+                }
+            }
+            if hits > 0 {
+                let coverage = hits as f32 / (N * N) as f32;
+                put_blend(buf, w, h, x, y, color, coverage);
             }
         }
     }
@@ -780,13 +824,19 @@ fn draw_pill(
             let in_corner_tr = dx >= rw - radius && dy < radius;
             let in_corner_bl = dx < radius && dy >= rh - radius;
             let in_corner_br = dx >= rw - radius && dy >= rh - radius;
+            // Compute per-pixel coverage at corners; 1.0 elsewhere.
+            let mut corner_coverage = 1.0_f32;
             if in_corner_tl || in_corner_tr || in_corner_bl || in_corner_br {
                 let cx = if dx < radius { radius } else { rw - radius - 1 };
                 let cy = if dy < radius { radius } else { rh - radius - 1 };
-                let d2 = (dx - cx).pow(2) + (dy - cy).pow(2);
-                if d2 > radius * radius {
+                let fx = (dx - cx) as f64;
+                let fy = (dy - cy) as f64;
+                let d = (fx * fx + fy * fy).sqrt();
+                let cov = (radius as f64 + 0.5 - d).clamp(0.0, 1.0);
+                if cov <= 0.0 {
                     continue;
                 }
+                corner_coverage = cov as f32;
             }
             let px = x + dx;
             let py = y + dy;
@@ -798,9 +848,10 @@ fn draw_pill(
             let br = ((bg >> 16) & 0xFF) as f32;
             let bgc = ((bg >> 8) & 0xFF) as f32;
             let bb = (bg & 0xFF) as f32;
-            let r = (fr * alpha + br * (1.0 - alpha)) as u32;
-            let g = (fg * alpha + bgc * (1.0 - alpha)) as u32;
-            let b = (fb * alpha + bb * (1.0 - alpha)) as u32;
+            let effective_alpha = alpha * corner_coverage;
+            let r = (fr * effective_alpha + br * (1.0 - effective_alpha)) as u32;
+            let g = (fg * effective_alpha + bgc * (1.0 - effective_alpha)) as u32;
+            let b = (fb * effective_alpha + bb * (1.0 - effective_alpha)) as u32;
             buf[idx] = (r << 16) | (g << 8) | b;
         }
     }
