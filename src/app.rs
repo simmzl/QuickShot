@@ -213,6 +213,11 @@ impl ApplicationHandler<UserEvent> for App {
         match overlay.handle_event(event) {
             Outcome::Continue => {}
             Outcome::Confirmed(rect) => self.confirm(rect),
+            Outcome::Pinned(rect) => {
+                // TEMPORARY — Task 10 replaces with App::pin(rect, event_loop).
+                eprintln!("quickshot: Outcome::Pinned({:?}) — pin window not yet implemented", rect);
+                self.cancel();
+            }
             Outcome::Cancelled => self.cancel(),
         }
     }

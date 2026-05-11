@@ -26,6 +26,7 @@ use annotate::{AnnotationStyle, PendingDraw};
 pub enum Outcome {
     Continue,
     Confirmed(Rect),
+    Pinned(Rect),
     Cancelled,
 }
 
@@ -442,8 +443,11 @@ impl Overlay {
                         return Outcome::Continue;
                     }
                     toolbar::ToolbarHit::Pin => {
-                        // Wired in Task 3.
-                        return Outcome::Continue;
+                        // Commit any in-flight TextEdit so its content gets
+                        // flattened into the pinned image (same pattern as
+                        // double-click → Confirmed).
+                        self.commit_text_edit();
+                        return Outcome::Pinned(rect);
                     }
                     toolbar::ToolbarHit::None => {}
                 }
