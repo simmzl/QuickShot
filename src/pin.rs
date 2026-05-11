@@ -164,13 +164,18 @@ impl PinWindow {
                 if is_double_click {
                     return PinOutcome::Closed;
                 }
-                // Single press: record state for drag detection.
-                self.press_pos = self.last_cursor;
+                // Single press: record drag state. We store press_pos as
+                // screen-absolute (window outer + cursor window-local) so the
+                // reference frame doesn't shift when the window moves during
+                // drag. Otherwise the cursor's window-local position changes
+                // as we move the window, causing oscillation / jitter.
                 let outer = self
                     .window
                     .outer_position()
                     .unwrap_or_default();
                 self.win_pos_at_press = Some((outer.x, outer.y));
+                let cursor_local = self.last_cursor.unwrap_or((0, 0));
+                self.press_pos = Some((outer.x + cursor_local.0, outer.y + cursor_local.1));
                 PinOutcome::Continue
             }
             WindowEvent::MouseInput {
@@ -183,13 +188,25 @@ impl PinWindow {
                 PinOutcome::Continue
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let cursor = (position.x as i32, position.y as i32);
-                self.last_cursor = Some(cursor);
-                if let (Some(press), Some(win_at_press)) =
+                let cursor_local = (position.x as i32, position.y as i32);
+                self.last_cursor = Some(cursor_local);
+                if let (Some(press_screen), Some(win_at_press)) =
                     (self.press_pos, self.win_pos_at_press)
                 {
-                    let dx = cursor.0 - press.0;
-                    let dy = cursor.1 - press.1;
+                    // Compute current cursor position in screen-absolute coords
+                    // using the window's current outer position. Then derive
+                    // the drag delta from press (screen-absolute) so the math
+                    // doesn't oscillate as the window moves underneath.
+                    let outer_now = self
+                        .window
+                        .outer_position()
+                        .unwrap_or_default();
+                    let cursor_screen = (
+                        outer_now.x + cursor_local.0,
+                        outer_now.y + cursor_local.1,
+                    );
+                    let dx = cursor_screen.0 - press_screen.0;
+                    let dy = cursor_screen.1 - press_screen.1;
                     if dx.abs() + dy.abs() >= 4 {
                         let new_x = win_at_press.0 + dx;
                         let new_y = win_at_press.1 + dy;
