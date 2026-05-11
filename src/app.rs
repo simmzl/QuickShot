@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::HashMap;
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
@@ -25,6 +26,8 @@ pub enum UserEvent {
 
 pub struct App {
     overlay: Option<Overlay>,
+    pins: Vec<crate::pin::PinWindow>,
+    pin_window_ids: HashMap<WindowId, usize>,
     config: crate::config::Config,
     proxy: EventLoopProxy<UserEvent>,
     region_label: String,
@@ -41,6 +44,8 @@ impl App {
         let fullscreen_label = config.hotkey.fullscreen.raw.clone();
         Self {
             overlay: None,
+            pins: Vec::new(),
+            pin_window_ids: HashMap::new(),
             config,
             proxy,
             region_label,
@@ -89,6 +94,75 @@ impl App {
             }
         }
         drop(overlay);
+    }
+
+    fn pin(&mut self, rect: Rect, event_loop: &ActiveEventLoop) {
+        let Some(mut overlay) = self.overlay.take() else {
+            return;
+        };
+        let final_image = overlay.flatten_for_export(rect);
+        let (img_w, img_h) = final_image.dimensions();
+
+        // Same clipboard + save logic as App::confirm.
+        match clipboard::put_image(&final_image) {
+            Ok(()) => {
+                println!("copied {}x{} to clipboard (pinned)", img_w, img_h);
+                if self.config.save.enabled {
+                    match crate::file_save::save_png(
+                        &final_image,
+                        &self.config.save.directory,
+                        &self.config.save.filename_template,
+                        crate::file_save::CaptureMode::Region,
+                    ) {
+                        Ok(path) => println!("saved \u{2192} {}", path.display()),
+                        Err(e) => eprintln!("save error: {e:?}"),
+                    }
+                }
+            }
+            Err(e) => eprintln!("clipboard error: {e:?}"),
+        }
+
+        // Compute pin position + logical size.
+        let scale_factor = overlay.scale_factor();
+        let overlay_outer = overlay
+            .window
+            .outer_position()
+            .unwrap_or_default();
+        let screen_pos = crate::pin::compute_pin_screen_position(
+            (overlay_outer.x, overlay_outer.y),
+            (rect.x, rect.y),
+            scale_factor,
+        );
+        let logical_size = (
+            (img_w as f32 / scale_factor).round() as u32,
+            (img_h as f32 / scale_factor).round() as u32,
+        );
+
+        match crate::pin::PinWindow::create(event_loop, final_image, screen_pos, logical_size) {
+            Ok(pin_win) => {
+                let id = pin_win.window.id();
+                let idx = self.pins.len();
+                self.pins.push(pin_win);
+                self.pin_window_ids.insert(id, idx);
+            }
+            Err(e) => eprintln!("pin create error: {e:?}"),
+        }
+
+        drop(overlay);
+    }
+
+    fn close_pin(&mut self, idx: usize) {
+        if idx >= self.pins.len() {
+            return;
+        }
+        let pin = self.pins.swap_remove(idx);
+        self.pin_window_ids.remove(&pin.window.id());
+        // swap_remove moved the last element into `idx`; remap its WindowId.
+        if idx < self.pins.len() {
+            let moved_id = self.pins[idx].window.id();
+            self.pin_window_ids.insert(moved_id, idx);
+        }
+        // `pin` drops here → winit closes the window.
     }
 
     fn cancel(&mut self) {
@@ -200,25 +274,28 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn window_event(
         &mut self,
-        _event_loop: &ActiveEventLoop,
+        event_loop: &ActiveEventLoop,
         id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(overlay) = self.overlay.as_mut() else {
-            return;
-        };
-        if overlay.window.id() != id {
-            return;
-        }
-        match overlay.handle_event(event) {
-            Outcome::Continue => {}
-            Outcome::Confirmed(rect) => self.confirm(rect),
-            Outcome::Pinned(rect) => {
-                // TEMPORARY — Task 10 replaces with App::pin(rect, event_loop).
-                eprintln!("quickshot: Outcome::Pinned({:?}) — pin window not yet implemented", rect);
-                self.cancel();
+        // Try overlay first.
+        if let Some(overlay) = self.overlay.as_mut() {
+            if overlay.window.id() == id {
+                match overlay.handle_event(event) {
+                    Outcome::Continue => {}
+                    Outcome::Confirmed(rect) => self.confirm(rect),
+                    Outcome::Pinned(rect) => self.pin(rect, event_loop),
+                    Outcome::Cancelled => self.cancel(),
+                }
+                return;
             }
-            Outcome::Cancelled => self.cancel(),
+        }
+        // Try pins.
+        if let Some(&idx) = self.pin_window_ids.get(&id) {
+            match self.pins[idx].handle_event(event) {
+                crate::pin::PinOutcome::Continue => {}
+                crate::pin::PinOutcome::Closed => self.close_pin(idx),
+            }
         }
     }
 

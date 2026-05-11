@@ -56,7 +56,6 @@ pub fn compute_pin_screen_position(
 }
 
 impl PinWindow {
-    #[allow(dead_code)]
     pub fn create(
         event_loop: &ActiveEventLoop,
         image: RgbaImage,
@@ -137,7 +136,6 @@ impl PinWindow {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub fn handle_event(&mut self, event: WindowEvent) -> PinOutcome {
         use winit::dpi::PhysicalPosition;
         use winit::event::{ElementState, MouseButton};

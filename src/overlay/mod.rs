@@ -733,6 +733,10 @@ impl Overlay {
         (x, y)
     }
 
+    pub(crate) fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
+
     /// Produce the final cropped + annotated RGBA image for export to clipboard / file.
     pub fn flatten_for_export(&mut self, rect: Rect) -> image::RgbaImage {
         let frame_rect = self.window_rect_to_frame_rect(rect);
