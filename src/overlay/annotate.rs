@@ -49,7 +49,7 @@ impl Stroke {
     /// Block size (in frame-space pixels) used by the Mosaic tool. Larger
     /// blocks coarsen the pixelation; smaller blocks reveal more detail.
     pub fn mosaic_block_size(self) -> u32 {
-        match self { Self::Thin => 4, Self::Medium => 8, Self::Thick => 16 }
+        match self { Self::Thin => 6, Self::Medium => 12, Self::Thick => 24 }
     }
     pub fn step_up(self) -> Self {
         match self { Self::Thin => Self::Medium, Self::Medium => Self::Thick, Self::Thick => Self::Thick }
@@ -292,12 +292,12 @@ mod tests {
     }
 
     #[test]
-    fn finalize_mosaic_has_block_size_8() {
+    fn finalize_mosaic_default_block_size_12() {
         let p = PendingDraw::shape(Tool::Mosaic, AnnotationStyle::default(), (5, 5), (50, 50));
         match p.finalize().unwrap() {
             Annotation::Mosaic { rect, block_size } => {
                 assert_eq!(rect, Rect { x: 5, y: 5, w: 45, h: 45 });
-                assert_eq!(block_size, 8);
+                assert_eq!(block_size, 12);  // Stroke::Medium (default) → 12
             }
             _ => panic!("expected Mosaic"),
         }
@@ -455,9 +455,9 @@ mod tests {
 
     #[test]
     fn stroke_mosaic_block_size_values() {
-        assert_eq!(Stroke::Thin.mosaic_block_size(),   4);
-        assert_eq!(Stroke::Medium.mosaic_block_size(), 8);
-        assert_eq!(Stroke::Thick.mosaic_block_size(),  16);
+        assert_eq!(Stroke::Thin.mosaic_block_size(),   6);
+        assert_eq!(Stroke::Medium.mosaic_block_size(), 12);
+        assert_eq!(Stroke::Thick.mosaic_block_size(),  24);
     }
 
     #[test]

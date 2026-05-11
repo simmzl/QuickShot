@@ -107,10 +107,17 @@ impl App {
     /// user-chosen path. No clipboard copy, no pin — pure save-to-disk. Closes
     /// the overlay regardless of whether the user picked a file or cancelled.
     fn save_as(&mut self, rect: Rect) {
-        let Some(mut overlay) = self.overlay.take() else {
-            return;
+        // Take overlay + flatten image in a tight scope so the overlay drops
+        // BEFORE we show the save dialog. The overlay's NSWindow sits at
+        // kCGAssistiveTechHighWindowLevel (1500); if it's still alive when
+        // NSSavePanel renders, it covers the panel and the user can't see it.
+        let final_image = {
+            let Some(mut overlay) = self.overlay.take() else {
+                return;
+            };
+            overlay.flatten_for_export(rect)
+            // overlay drops here, closing the level-1500 NSWindow.
         };
-        let final_image = overlay.flatten_for_export(rect);
         let (img_w, img_h) = final_image.dimensions();
 
         // Default filename: quickshot-YYYY-MM-DD-HH-MM-SS.png. Best-effort
@@ -125,16 +132,25 @@ impl App {
             .map(|stamp| format!("quickshot-{}.png", stamp))
             .unwrap_or_else(|_| "screenshot.png".to_string());
 
+        // Temporarily flip to NSApplicationActivationPolicy.Regular (0) so the
+        // NSSavePanel gets focus and renders properly. Accessory apps don't
+        // reliably show modal panels. Restore to Accessory (1) after the
+        // dialog dismisses — whether the user picks a path or cancels — so we
+        // don't gain a permanent Dock icon.
+        #[cfg(target_os = "macos")]
+        set_macos_activation_policy(0);
+
         // rfd::FileDialog::save_file() is synchronous — blocks the event loop
-        // while the user picks. Acceptable here because the overlay is already
-        // being torn down (we took the Option above) and no other windows are
-        // expected to need redraws during the modal. NSSavePanel is modal at
-        // the OS level so there's no visible alternative.
+        // while the user picks. Acceptable here: the overlay has already been
+        // dropped (above), and NSSavePanel is OS-level modal anyway.
         let path = rfd::FileDialog::new()
             .set_title("Save Screenshot")
             .set_file_name(&default_name)
             .add_filter("PNG image", &["png"])
             .save_file();
+
+        #[cfg(target_os = "macos")]
+        set_macos_activation_policy(1);
 
         match path {
             Some(mut p) => {
@@ -156,8 +172,6 @@ impl App {
                 println!("save cancelled");
             }
         }
-
-        drop(overlay);
     }
 
     fn pin(&mut self, rect: Rect, event_loop: &ActiveEventLoop) {
@@ -375,11 +389,17 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
-/// Force NSApplication.activationPolicy = Accessory so the process participates
-/// in AppKit well enough to own an NSStatusBar item. For bundled LSUIElement
-/// apps this is redundant but harmless; for direct-exec CLI it's required.
+/// Set NSApplication.activationPolicy. NSApplicationActivationPolicy values:
+///   Regular    = 0  (foreground app, Dock icon, menu bar — gains focus)
+///   Accessory  = 1  (no Dock, no menu bar, but can show windows)
+///   Prohibited = 2  (cannot show windows)
+///
+/// We run as Accessory at startup so the app participates in AppKit enough to
+/// own an NSStatusBar item without grabbing a Dock icon. We temporarily flip
+/// to Regular around modal dialogs (e.g. NSSavePanel) because panels from
+/// Accessory apps may not get focus / may not display reliably.
 #[cfg(target_os = "macos")]
-fn set_macos_activation_policy_accessory() {
+fn set_macos_activation_policy(policy: i64) {
     use crate::macos_objc::{class, msg_send_id, msg_send_set_int, sel};
     unsafe {
         let ns_app_class = class(c"NSApplication");
@@ -392,7 +412,14 @@ fn set_macos_activation_policy_accessory() {
             eprintln!("quickshot: NSApplication sharedApplication = null");
             return;
         }
-        // NSApplicationActivationPolicyAccessory = 1 (NSInteger, 64-bit on macOS).
-        msg_send_set_int(ns_app, sel(c"setActivationPolicy:"), 1);
+        msg_send_set_int(ns_app, sel(c"setActivationPolicy:"), policy);
     }
+}
+
+/// Force NSApplication.activationPolicy = Accessory so the process participates
+/// in AppKit well enough to own an NSStatusBar item. For bundled LSUIElement
+/// apps this is redundant but harmless; for direct-exec CLI it's required.
+#[cfg(target_os = "macos")]
+fn set_macos_activation_policy_accessory() {
+    set_macos_activation_policy(1);
 }
