@@ -104,45 +104,42 @@ impl App {
     }
 
     /// Open a native save dialog and write the cropped+annotated image to the
-    /// user-chosen path. No clipboard copy, no pin — pure save-to-disk. Closes
-    /// the overlay regardless of whether the user picked a file or cancelled.
+    /// user-chosen path. No clipboard copy, no pin — pure save-to-disk. Keeps
+    /// the overlay visible during the dialog (level temporarily lowered so the
+    /// panel can render above it); closes overlay on save, restores it on cancel.
     fn save_as(&mut self, rect: Rect) {
-        // Take overlay + flatten image in a tight scope so the overlay drops
-        // BEFORE we show the save dialog. The overlay's NSWindow sits at
-        // kCGAssistiveTechHighWindowLevel (1500); if it's still alive when
-        // NSSavePanel renders, it covers the panel and the user can't see it.
-        let final_image = {
-            let Some(mut overlay) = self.overlay.take() else {
+        // Flatten image + clone the window handle while holding overlay borrow.
+        // We need the handle later to flip the NSWindow level around the dialog.
+        let (final_image, window_handle) = {
+            let Some(overlay) = self.overlay.as_mut() else {
                 return;
             };
-            overlay.flatten_for_export(rect)
-            // overlay drops here, closing the level-1500 NSWindow.
+            let img = overlay.flatten_for_export(rect);
+            let handle = overlay.window.clone();   // Rc clone — cheap.
+            (img, handle)
         };
         let (img_w, img_h) = final_image.dimensions();
 
-        // Default filename: quickshot-YYYY-MM-DD-HH-MM-SS.png. Best-effort
-        // local time; fall back to UTC, then to a plain "screenshot.png" if
-        // the time crate fails to format (shouldn't, but stay defensive).
-        let now = time::OffsetDateTime::now_local()
-            .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-        let default_name = now
-            .format(time::macros::format_description!(
-                "[year]-[month]-[day]-[hour]-[minute]-[second]"
-            ))
-            .map(|stamp| format!("quickshot-{}.png", stamp))
-            .unwrap_or_else(|_| "screenshot.png".to_string());
+        // Lower the overlay's NSWindow level so the save panel renders above it.
+        // (The overlay would otherwise sit at level 1500 and cover the panel.)
+        #[cfg(target_os = "macos")]
+        crate::overlay::set_macos_window_level(&window_handle, 0);
 
-        // Temporarily flip to NSApplicationActivationPolicy.Regular (0) so the
-        // NSSavePanel gets focus and renders properly. Accessory apps don't
-        // reliably show modal panels. Restore to Accessory (1) after the
-        // dialog dismisses — whether the user picks a path or cancels — so we
-        // don't gain a permanent Dock icon.
+        // Switch activation policy to Regular so the modal panel from our
+        // Accessory app gets focus + renders properly.
         #[cfg(target_os = "macos")]
         set_macos_activation_policy(0);
 
-        // rfd::FileDialog::save_file() is synchronous — blocks the event loop
-        // while the user picks. Acceptable here: the overlay has already been
-        // dropped (above), and NSSavePanel is OS-level modal anyway.
+        let default_name = format!(
+            "quickshot-{}.png",
+            time::OffsetDateTime::now_local()
+                .unwrap_or_else(|_| time::OffsetDateTime::now_utc())
+                .format(time::macros::format_description!(
+                    "[year]-[month]-[day]-[hour]-[minute]-[second]"
+                ))
+                .unwrap_or_else(|_| "screenshot".to_string()),
+        );
+
         let path = rfd::FileDialog::new()
             .set_title("Save Screenshot")
             .set_file_name(&default_name)
@@ -153,25 +150,29 @@ impl App {
         set_macos_activation_policy(1);
 
         match path {
-            Some(mut p) => {
+            Some(p) => {
+                let mut p = p;
                 if p.extension().is_none() {
                     p.set_extension("png");
                 }
                 match final_image.save(&p) {
-                    Ok(()) => println!(
-                        "saved {}x{} \u{2192} {}",
-                        img_w,
-                        img_h,
-                        p.display()
-                    ),
+                    Ok(()) => println!("saved {}x{} \u{2192} {}", img_w, img_h, p.display()),
                     Err(e) => eprintln!("save error: {e:?}"),
                 }
+                // Saved — close the overlay.
+                self.overlay = None;
             }
             None => {
-                // User cancelled — silent return, no error.
+                // Cancelled — restore overlay level so it pops back on top.
+                // Overlay stays alive; user can keep editing or pick another action.
+                #[cfg(target_os = "macos")]
+                crate::overlay::set_macos_window_level(&window_handle, 1500);
                 println!("save cancelled");
             }
         }
+        // window_handle (the Rc clone) drops here. If we cleared self.overlay,
+        // that's the last strong ref → NSWindow closes. If we didn't,
+        // self.overlay still holds it.
     }
 
     fn pin(&mut self, rect: Rect, event_loop: &ActiveEventLoop) {
