@@ -103,6 +103,63 @@ impl App {
         drop(overlay);
     }
 
+    /// Open a native save dialog and write the cropped+annotated image to the
+    /// user-chosen path. No clipboard copy, no pin — pure save-to-disk. Closes
+    /// the overlay regardless of whether the user picked a file or cancelled.
+    fn save_as(&mut self, rect: Rect) {
+        let Some(mut overlay) = self.overlay.take() else {
+            return;
+        };
+        let final_image = overlay.flatten_for_export(rect);
+        let (img_w, img_h) = final_image.dimensions();
+
+        // Default filename: quickshot-YYYY-MM-DD-HH-MM-SS.png. Best-effort
+        // local time; fall back to UTC, then to a plain "screenshot.png" if
+        // the time crate fails to format (shouldn't, but stay defensive).
+        let now = time::OffsetDateTime::now_local()
+            .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
+        let default_name = now
+            .format(time::macros::format_description!(
+                "[year]-[month]-[day]-[hour]-[minute]-[second]"
+            ))
+            .map(|stamp| format!("quickshot-{}.png", stamp))
+            .unwrap_or_else(|_| "screenshot.png".to_string());
+
+        // rfd::FileDialog::save_file() is synchronous — blocks the event loop
+        // while the user picks. Acceptable here because the overlay is already
+        // being torn down (we took the Option above) and no other windows are
+        // expected to need redraws during the modal. NSSavePanel is modal at
+        // the OS level so there's no visible alternative.
+        let path = rfd::FileDialog::new()
+            .set_title("Save Screenshot")
+            .set_file_name(&default_name)
+            .add_filter("PNG image", &["png"])
+            .save_file();
+
+        match path {
+            Some(mut p) => {
+                if p.extension().is_none() {
+                    p.set_extension("png");
+                }
+                match final_image.save(&p) {
+                    Ok(()) => println!(
+                        "saved {}x{} \u{2192} {}",
+                        img_w,
+                        img_h,
+                        p.display()
+                    ),
+                    Err(e) => eprintln!("save error: {e:?}"),
+                }
+            }
+            None => {
+                // User cancelled — silent return, no error.
+                println!("save cancelled");
+            }
+        }
+
+        drop(overlay);
+    }
+
     fn pin(&mut self, rect: Rect, event_loop: &ActiveEventLoop) {
         let Some(mut overlay) = self.overlay.take() else {
             return;
@@ -280,6 +337,7 @@ impl ApplicationHandler<UserEvent> for App {
                     Outcome::Continue => {}
                     Outcome::Confirmed(rect) => self.confirm(rect),
                     Outcome::Pinned(rect) => self.pin(rect, event_loop),
+                    Outcome::SaveAs(rect) => self.save_as(rect),
                     Outcome::Cancelled => self.cancel(),
                 }
                 return;

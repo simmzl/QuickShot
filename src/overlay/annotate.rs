@@ -46,6 +46,11 @@ impl Stroke {
     pub fn font_px(self) -> f32 {
         match self { Self::Thin => 24.0, Self::Medium => 40.0, Self::Thick => 64.0 }
     }
+    /// Block size (in frame-space pixels) used by the Mosaic tool. Larger
+    /// blocks coarsen the pixelation; smaller blocks reveal more detail.
+    pub fn mosaic_block_size(self) -> u32 {
+        match self { Self::Thin => 4, Self::Medium => 8, Self::Thick => 16 }
+    }
     pub fn step_up(self) -> Self {
         match self { Self::Thin => Self::Medium, Self::Medium => Self::Thick, Self::Thick => Self::Thick }
     }
@@ -161,7 +166,7 @@ impl PendingDraw {
                 }),
                 Tool::Mosaic => Some(Annotation::Mosaic {
                     rect: Rect::normalize(from_frame, to_frame),
-                    block_size: 8,
+                    block_size: style.stroke.mosaic_block_size(),
                 }),
             },
             PendingDraw::Pen { points, style } => {
@@ -446,6 +451,13 @@ mod tests {
         assert_eq!(Stroke::Thin.px(),    2);
         assert_eq!(Stroke::Medium.px(),  4);
         assert_eq!(Stroke::Thick.px(),   6);
+    }
+
+    #[test]
+    fn stroke_mosaic_block_size_values() {
+        assert_eq!(Stroke::Thin.mosaic_block_size(),   4);
+        assert_eq!(Stroke::Medium.mosaic_block_size(), 8);
+        assert_eq!(Stroke::Thick.mosaic_block_size(),  16);
     }
 
     #[test]

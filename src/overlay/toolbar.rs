@@ -28,6 +28,7 @@ pub struct Toolbar {
     pub undo_button: IconButton,
     pub redo_button: IconButton,
     pub pin_button: IconButton,
+    pub save_button: IconButton,
     pub color_buttons: Vec<ColorButton>,
     pub stroke_buttons: Vec<StrokeButton>,
 }
@@ -61,6 +62,7 @@ pub enum ToolbarHit {
     Undo,
     Redo,
     Pin,
+    Save,
     Color(Color),
     Stroke(Stroke),
     None,
@@ -82,6 +84,7 @@ impl Toolbar {
         let row1_content_w = tools_w
             + SEP_WIDTH
             + (ICON_SIZE + ICON_PAD) + ICON_SIZE
+            + ICON_PAD + ICON_SIZE
             + ICON_PAD + ICON_SIZE;
         let row1_w = row1_content_w + 2 * ICON_PAD;
 
@@ -147,6 +150,11 @@ impl Toolbar {
             origin: (x, row1_y),
             size: (ICON_SIZE, ICON_SIZE),
         };
+        x += ICON_SIZE + ICON_PAD;
+        let save_button = IconButton {
+            origin: (x, row1_y),
+            size: (ICON_SIZE, ICON_SIZE),
+        };
 
         // Row 2 — colors + strokes.
         let row2_x_start = bar_x + (bar_w - row2_content_w) / 2;
@@ -181,6 +189,7 @@ impl Toolbar {
             undo_button,
             redo_button,
             pin_button,
+            save_button,
             color_buttons,
             stroke_buttons,
         }
@@ -202,15 +211,20 @@ impl Toolbar {
         if point_in(cursor, self.pin_button.origin, self.pin_button.size) {
             return ToolbarHit::Pin;
         }
-        // Row 2 disabled under Mosaic (style isn't applied).
-        if active_tool == Tool::Mosaic {
-            return ToolbarHit::None;
+        // Save is row 1 (always clickable, even under Mosaic).
+        if point_in(cursor, self.save_button.origin, self.save_button.size) {
+            return ToolbarHit::Save;
         }
-        for btn in &self.color_buttons {
-            if point_in(cursor, btn.origin, btn.size) {
-                return ToolbarHit::Color(btn.color);
+        // Row 2 color: disabled under Mosaic (no color concept for mosaic).
+        if active_tool != Tool::Mosaic {
+            for btn in &self.color_buttons {
+                if point_in(cursor, btn.origin, btn.size) {
+                    return ToolbarHit::Color(btn.color);
+                }
             }
         }
+        // Row 2 stroke: enabled under all tools, including Mosaic
+        // (Mosaic uses stroke to pick block size).
         for btn in &self.stroke_buttons {
             if point_in(cursor, btn.origin, btn.size) {
                 return ToolbarHit::Stroke(btn.stroke);
@@ -256,19 +270,25 @@ pub fn draw_toolbar(
     draw_icon_redo(buf, win_w, win_h, toolbar.redo_button.origin, redo_color);
     // Pin icon is always white (no enabled/disabled state).
     draw_icon_pin_thumbtack(buf, win_w, win_h, toolbar.pin_button.origin, 0xFFFFFF);
+    // Save icon is always white (no enabled/disabled state).
+    draw_icon_save_disk(buf, win_w, win_h, toolbar.save_button.origin, 0xFFFFFF);
 
-    // Row 2 — disabled (faded) when Mosaic is active.
-    let row2_alpha: f32 = if current_tool == Tool::Mosaic { 0.4 } else { 1.0 };
-    let row2_disabled = current_tool == Tool::Mosaic;
+    // Row 2 — color is faded/disabled under Mosaic (no color concept for
+    // mosaic). Stroke stays full opacity + interactive under Mosaic so the
+    // user can pick the block size.
+    let color_alpha: f32 = if current_tool == Tool::Mosaic { 0.4 } else { 1.0 };
+    let color_disabled = current_tool == Tool::Mosaic;
+    let stroke_alpha: f32 = 1.0;
+    let stroke_disabled = false;
     for btn in &toolbar.color_buttons {
         let argb = btn.color.argb();
         let cx = btn.origin.0 + btn.size.0 / 2;
         let cy = btn.origin.1 + btn.size.1 / 2;
         let radius = btn.size.0 as f64 / 2.0;
         // Filled disk (color), faded if Mosaic active.
-        let argb_alpha = mix_argb(argb, 0x000000, 1.0 - row2_alpha);
+        let argb_alpha = mix_argb(argb, 0x000000, 1.0 - color_alpha);
         fill_disk(buf, win_w, win_h, cx as f64, cy as f64, radius, argb_alpha);
-        if btn.color == current_style.color && !row2_disabled {
+        if btn.color == current_style.color && !color_disabled {
             // Active ring: white circle outlining the swatch.
             stroke_ellipse(buf, win_w, win_h, cx, cy, radius + 3.0, radius + 3.0, 2, 0xFFFFFF);
         }
@@ -277,9 +297,9 @@ pub fn draw_toolbar(
         let cx = btn.origin.0 + btn.size.0 / 2;
         let cy = btn.origin.1 + btn.size.1 / 2;
         let dot_r = (btn.stroke.px() * UI_SCALE) as f64 / 2.0;
-        let argb = mix_argb(0xFFFFFF, 0x000000, 1.0 - row2_alpha);
+        let argb = mix_argb(0xFFFFFF, 0x000000, 1.0 - stroke_alpha);
         fill_disk(buf, win_w, win_h, cx as f64, cy as f64, dot_r, argb);
-        if btn.stroke == current_style.stroke && !row2_disabled {
+        if btn.stroke == current_style.stroke && !stroke_disabled {
             stroke_ellipse(buf, win_w, win_h, cx, cy, dot_r + 4.0, dot_r + 4.0, 2, 0xFFFFFF);
         }
     }
@@ -587,6 +607,24 @@ fn draw_icon_redo(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
     let bot = (cx - arm_x, cy + arm_y);
     stroke_line(buf, w, h, top.0, top.1, tip.0, tip.1, STROKE, color);
     stroke_line(buf, w, h, tip.0, tip.1, bot.0, bot.1, STROKE, color);
+}
+
+fn draw_icon_save_disk(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
+    // Floppy / save icon: outer rounded rect outline + a smaller filled
+    // rect at the top representing the metal slider. Reads as "save".
+    let pad = ICON_SIZE / 6;
+    let outer_x = o.0 + pad;
+    let outer_y = o.1 + pad;
+    let outer_w = ICON_SIZE - 2 * pad;
+    let outer_h = ICON_SIZE - 2 * pad;
+    // Outer box outline.
+    stroke_rect(buf, w, h, outer_x, outer_y, outer_w, outer_h, STROKE, color);
+    // Top slider: filled rectangle covering the top ~1/3 of the inside.
+    let slider_h = outer_h / 3;
+    let slider_w = outer_w - 4 * UI_SCALE;
+    let slider_x = outer_x + 2 * UI_SCALE;
+    let slider_y = outer_y;
+    fill_rect(buf, w, h, slider_x, slider_y, slider_w, slider_h, color);
 }
 
 fn draw_icon_pin_thumbtack(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
@@ -988,11 +1026,20 @@ mod tests {
     }
 
     #[test]
-    fn hit_row2_returns_none_when_mosaic_active() {
+    fn hit_row2_color_returns_none_when_mosaic_active() {
         let t = Toolbar::layout(sel(), (1440, 900));
         let yellow = &t.color_buttons[1];
         let c = (yellow.origin.0 + 4, yellow.origin.1 + 4);
         assert_eq!(t.hit_with_tool(c, Tool::Mosaic), ToolbarHit::None);
+    }
+
+    #[test]
+    fn hit_stroke_under_mosaic_returns_stroke() {
+        // Stroke section is interactive under Mosaic (controls block size).
+        let t = Toolbar::layout(sel(), (1440, 900));
+        let thick = &t.stroke_buttons[2];
+        let s = (thick.origin.0 + 4, thick.origin.1 + 4);
+        assert_eq!(t.hit_with_tool(s, Tool::Mosaic), ToolbarHit::Stroke(Stroke::Thick));
     }
 
     #[test]
@@ -1021,5 +1068,31 @@ mod tests {
         let p = &t.pin_button;
         let c = (p.origin.0 + 5, p.origin.1 + 5);
         assert_eq!(t.hit_with_tool(c, Tool::Mosaic), ToolbarHit::Pin);
+    }
+
+    #[test]
+    fn toolbar_has_save_button() {
+        let t = Toolbar::layout(sel(), (1440, 900));
+        // Save sits to the right of pin on row 1.
+        assert!(t.save_button.origin.0 > t.pin_button.origin.0);
+        assert_eq!(t.save_button.origin.1, t.pin_button.origin.1);
+        assert_eq!(t.save_button.size, (ICON_SIZE, ICON_SIZE));
+    }
+
+    #[test]
+    fn hit_save_button() {
+        let t = Toolbar::layout(sel(), (1440, 900));
+        let s = &t.save_button;
+        let c = (s.origin.0 + 5, s.origin.1 + 5);
+        assert_eq!(t.hit_with_tool(c, Tool::Move), ToolbarHit::Save);
+    }
+
+    #[test]
+    fn hit_save_button_works_under_mosaic() {
+        // Save (row 1) stays clickable even under Mosaic.
+        let t = Toolbar::layout(sel(), (1440, 900));
+        let s = &t.save_button;
+        let c = (s.origin.0 + 5, s.origin.1 + 5);
+        assert_eq!(t.hit_with_tool(c, Tool::Mosaic), ToolbarHit::Save);
     }
 }

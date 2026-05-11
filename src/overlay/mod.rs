@@ -27,6 +27,7 @@ pub enum Outcome {
     Continue,
     Confirmed(Rect),
     Pinned(Rect),
+    SaveAs(Rect),
     Cancelled,
 }
 
@@ -448,6 +449,12 @@ impl Overlay {
                         // double-click → Confirmed).
                         self.commit_text_edit();
                         return Outcome::Pinned(rect);
+                    }
+                    toolbar::ToolbarHit::Save => {
+                        // Commit in-flight TextEdit so its content gets
+                        // flattened into the saved PNG.
+                        self.commit_text_edit();
+                        return Outcome::SaveAs(rect);
                     }
                     toolbar::ToolbarHit::None => {}
                 }
