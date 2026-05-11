@@ -1,4 +1,5 @@
 use anyhow::Result;
+use image::RgbaImage;
 use std::collections::HashMap;
 use winit::application::ApplicationHandler;
 use winit::event::{StartCause, WindowEvent};
@@ -65,51 +66,21 @@ impl App {
         Ok(())
     }
 
-    fn confirm(&mut self, rect: Rect) {
-        let Some(mut overlay) = self.overlay.take() else {
-            return;
-        };
-        let final_image = overlay.flatten_for_export(rect);
-        match clipboard::put_image(&final_image) {
+    /// Copy `img` to the clipboard and save as PNG if config.save.enabled.
+    /// `label` is appended to the "copied …" log line so the user knows
+    /// whether this was a confirm or a pin.
+    fn export_image(&self, img: &RgbaImage, label: &str) {
+        let (w, h) = img.dimensions();
+        match clipboard::put_image(img) {
             Ok(()) => {
-                println!(
-                    "copied {}x{} to clipboard",
-                    final_image.width(),
-                    final_image.height()
-                );
-                if self.config.save.enabled {
-                    match crate::file_save::save_png(
-                        &final_image,
-                        &self.config.save.directory,
-                        &self.config.save.filename_template,
-                        crate::file_save::CaptureMode::Region,
-                    ) {
-                        Ok(path) => println!("saved \u{2192} {}", path.display()),
-                        Err(e) => eprintln!("save error: {e:?}"),
-                    }
+                if label.is_empty() {
+                    println!("copied {}x{} to clipboard", w, h);
+                } else {
+                    println!("copied {}x{} to clipboard ({})", w, h, label);
                 }
-            }
-            Err(e) => {
-                eprintln!("clipboard error: {e:?}");
-            }
-        }
-        drop(overlay);
-    }
-
-    fn pin(&mut self, rect: Rect, event_loop: &ActiveEventLoop) {
-        let Some(mut overlay) = self.overlay.take() else {
-            return;
-        };
-        let final_image = overlay.flatten_for_export(rect);
-        let (img_w, img_h) = final_image.dimensions();
-
-        // Same clipboard + save logic as App::confirm.
-        match clipboard::put_image(&final_image) {
-            Ok(()) => {
-                println!("copied {}x{} to clipboard (pinned)", img_w, img_h);
                 if self.config.save.enabled {
                     match crate::file_save::save_png(
-                        &final_image,
+                        img,
                         &self.config.save.directory,
                         &self.config.save.filename_template,
                         crate::file_save::CaptureMode::Region,
@@ -121,15 +92,39 @@ impl App {
             }
             Err(e) => eprintln!("clipboard error: {e:?}"),
         }
+    }
+
+    fn confirm(&mut self, rect: Rect) {
+        let Some(mut overlay) = self.overlay.take() else {
+            return;
+        };
+        let final_image = overlay.flatten_for_export(rect);
+        self.export_image(&final_image, "");
+        drop(overlay);
+    }
+
+    fn pin(&mut self, rect: Rect, event_loop: &ActiveEventLoop) {
+        let Some(mut overlay) = self.overlay.take() else {
+            return;
+        };
+        let final_image = overlay.flatten_for_export(rect);
+        let (img_w, img_h) = final_image.dimensions();
+        self.export_image(&final_image, "pinned");
 
         // Compute pin position + logical size.
         let scale_factor = overlay.scale_factor();
-        let overlay_outer = overlay
+        // outer_position() returns PhysicalPosition. compute_pin_screen_position
+        // expects logical coords for the first arg. Convert.
+        let overlay_outer_physical = overlay
             .window
             .outer_position()
             .unwrap_or_default();
+        let overlay_outer_logical = (
+            (overlay_outer_physical.x as f32 / scale_factor).round() as i32,
+            (overlay_outer_physical.y as f32 / scale_factor).round() as i32,
+        );
         let screen_pos = crate::pin::compute_pin_screen_position(
-            (overlay_outer.x, overlay_outer.y),
+            overlay_outer_logical,
             (rect.x, rect.y),
             scale_factor,
         );
