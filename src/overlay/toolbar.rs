@@ -712,18 +712,44 @@ fn stroke_line(
     thickness: i32,
     color: u32,
 ) {
-    let (fx, fy) = (x0 as f64, y0 as f64);
-    let (tx, ty) = (x1 as f64, y1 as f64);
-    let dx = tx - fx;
-    let dy = ty - fy;
-    let len = (dx * dx + dy * dy).sqrt().max(1.0);
-    let steps = (len.ceil() as i32).max(1);
-    let r = thickness as f64 / 2.0;
-    for i in 0..=steps {
-        let t = i as f64 / steps as f64;
-        let x = fx + dx * t;
-        let y = fy + dy * t;
-        fill_disk(buf, w, h, x, y, r, color);
+    // Per-pixel distance-coverage AA: avoid the speckling/half-transparency
+    // that stamping AA disks along a path produces when overlap accumulation
+    // never reaches 1.0 coverage.
+    let half_t = thickness as f64 / 2.0;
+    let fx0 = x0 as f64;
+    let fy0 = y0 as f64;
+    let fx1 = x1 as f64;
+    let fy1 = y1 as f64;
+    let dx = fx1 - fx0;
+    let dy = fy1 - fy0;
+    let len2 = dx * dx + dy * dy;
+    if len2 < 0.0001 {
+        // Degenerate: just draw a disk at the start.
+        fill_disk(buf, w, h, fx0, fy0, half_t, color);
+        return;
+    }
+    let bound_min_x = (fx0.min(fx1) - half_t - 1.0).floor() as i32;
+    let bound_max_x = (fx0.max(fx1) + half_t + 1.0).ceil() as i32;
+    let bound_min_y = (fy0.min(fy1) - half_t - 1.0).floor() as i32;
+    let bound_max_y = (fy0.max(fy1) + half_t + 1.0).ceil() as i32;
+
+    for y in bound_min_y..=bound_max_y {
+        for x in bound_min_x..=bound_max_x {
+            let px = x as f64 + 0.5;
+            let py = y as f64 + 0.5;
+            // Project pixel center onto segment; clamp to [0, 1] for rounded caps.
+            let t = ((px - fx0) * dx + (py - fy0) * dy) / len2;
+            let tc = t.clamp(0.0, 1.0);
+            let proj_x = fx0 + tc * dx;
+            let proj_y = fy0 + tc * dy;
+            let ddx = px - proj_x;
+            let ddy = py - proj_y;
+            let dist = (ddx * ddx + ddy * ddy).sqrt();
+            let coverage = (half_t + 0.5 - dist).clamp(0.0, 1.0) as f32;
+            if coverage > 0.0 {
+                put_blend(buf, w, h, x, y, color, coverage);
+            }
+        }
     }
 }
 
@@ -739,16 +765,36 @@ fn stroke_ellipse(
     thickness: i32,
     color: u32,
 ) {
-    // Parametric ellipse: sample enough points for smooth stroke.
-    let perimeter = 2.0 * std::f64::consts::PI * rx.max(ry);
-    let steps = (perimeter * 2.0) as i32;
-    let stroke_r = thickness as f64 / 2.0;
-    let (cxf, cyf) = (cx as f64, cy as f64);
-    for i in 0..=steps {
-        let theta = (i as f64 / steps as f64) * 2.0 * std::f64::consts::PI;
-        let x = cxf + rx * theta.cos();
-        let y = cyf + ry * theta.sin();
-        fill_disk(buf, w, h, x, y, stroke_r, color);
+    // Per-pixel distance-coverage AA: each pixel contributes once with its
+    // proper coverage. No path-stamping, no overlap accumulation.
+    let half_t = thickness as f64 / 2.0;
+    let cxf = cx as f64;
+    let cyf = cy as f64;
+    let min_r = rx.min(ry);
+    // Bounding box: ellipse extents + half-thickness + 1 px AA bleed.
+    let bound_x_min = (cxf - rx - half_t - 1.0).floor() as i32;
+    let bound_x_max = (cxf + rx + half_t + 1.0).ceil() as i32;
+    let bound_y_min = (cyf - ry - half_t - 1.0).floor() as i32;
+    let bound_y_max = (cyf + ry + half_t + 1.0).ceil() as i32;
+
+    for y in bound_y_min..=bound_y_max {
+        for x in bound_x_min..=bound_x_max {
+            // Sample at pixel center.
+            let px = x as f64 + 0.5;
+            let py = y as f64 + 0.5;
+            // Normalized distance to the ellipse perimeter (perimeter at r_norm == 1).
+            let nx = (px - cxf) / rx;
+            let ny = (py - cyf) / ry;
+            let r_norm = (nx * nx + ny * ny).sqrt();
+            // Approximate Euclidean distance to perimeter using min-radius scale.
+            // Exact distance requires a quartic; this is visually correct for
+            // mildly-eccentric ellipses (our icons + user-drawn marks).
+            let dist = (r_norm - 1.0).abs() * min_r;
+            let coverage = (half_t + 0.5 - dist).clamp(0.0, 1.0) as f32;
+            if coverage > 0.0 {
+                put_blend(buf, w, h, x, y, color, coverage);
+            }
+        }
     }
 }
 

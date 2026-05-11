@@ -100,21 +100,31 @@ pub fn draw_ellipse_outline_on_image(
     if rect.w <= 2 || rect.h <= 2 || thickness <= 0 {
         return;
     }
-    let (w, h) = (img.width() as i32, img.height() as i32);
+    // Per-pixel distance-coverage AA (image variant). Single blend pass per
+    // pixel with proper coverage — no overlap accumulation.
     let cx = rect.x as f64 + rect.w as f64 / 2.0;
     let cy = rect.y as f64 + rect.h as f64 / 2.0;
     let rx = rect.w as f64 / 2.0;
     let ry = rect.h as f64 / 2.0;
-    let half_thick = thickness as f64 / 2.0;
+    let half_t = thickness as f64 / 2.0;
+    let min_r = rx.min(ry);
     let pad = (thickness + 2).max(2);
-    for y in (rect.y - pad)..=(rect.y + rect.h + pad) {
-        for x in (rect.x - pad)..=(rect.x + rect.w + pad) {
-            let nx = (x as f64 + 0.5 - cx) / rx;
-            let ny = (y as f64 + 0.5 - cy) / ry;
-            let r = (nx * nx + ny * ny).sqrt();
-            let band = half_thick / rx.min(ry);
-            if (r - 1.0).abs() <= band {
-                put_clamped(img, x, y, w, h, color);
+    let y_min = rect.y - pad;
+    let y_max = rect.y + rect.h + pad;
+    let x_min = rect.x - pad;
+    let x_max = rect.x + rect.w + pad;
+    for y in y_min..=y_max {
+        for x in x_min..=x_max {
+            let px = x as f64 + 0.5;
+            let py = y as f64 + 0.5;
+            let nx = (px - cx) / rx;
+            let ny = (py - cy) / ry;
+            let r_norm = (nx * nx + ny * ny).sqrt();
+            // Approximate Euclidean distance to perimeter via min-radius scale.
+            let dist = (r_norm - 1.0).abs() * min_r;
+            let coverage = (half_t + 0.5 - dist).clamp(0.0, 1.0) as f32;
+            if coverage > 0.0 {
+                put_blend_image(img, x, y, color, coverage);
             }
         }
     }
@@ -160,33 +170,48 @@ fn draw_line_thick(
     to: (i32, i32),
     color: Rgba<u8>,
     thickness: i32,
-    w: i32,
-    h: i32,
+    _w: i32,
+    _h: i32,
 ) {
-    let (fx, fy) = (from.0 as f64, from.1 as f64);
-    let (tx, ty) = (to.0 as f64, to.1 as f64);
-    let dx = tx - fx;
-    let dy = ty - fy;
-    let len = (dx * dx + dy * dy).sqrt().max(1.0);
-    let steps = (len.ceil() as i32).max(1);
-    let r = thickness as f64 / 2.0;
-    for i in 0..=steps {
-        let t = i as f64 / steps as f64;
-        let x = fx + dx * t;
-        let y = fy + dy * t;
-        fill_disk(img, x, y, r, color, w, h);
+    // Per-pixel distance-coverage AA (image variant). Avoids speckling that
+    // arises from stamping AA disks along a path. _w/_h are kept for callsite
+    // compatibility; `put_blend_image` does its own bounds check.
+    if thickness <= 0 {
+        return;
     }
-}
+    let half_t = thickness as f64 / 2.0;
+    let fx0 = from.0 as f64;
+    let fy0 = from.1 as f64;
+    let fx1 = to.0 as f64;
+    let fy1 = to.1 as f64;
+    let dx = fx1 - fx0;
+    let dy = fy1 - fy0;
+    let len2 = dx * dx + dy * dy;
+    let bound_min_x = (fx0.min(fx1) - half_t - 1.0).floor() as i32;
+    let bound_max_x = (fx0.max(fx1) + half_t + 1.0).ceil() as i32;
+    let bound_min_y = (fy0.min(fy1) - half_t - 1.0).floor() as i32;
+    let bound_max_y = (fy0.max(fy1) + half_t + 1.0).ceil() as i32;
 
-fn fill_disk(img: &mut RgbaImage, cx: f64, cy: f64, r: f64, color: Rgba<u8>, w: i32, h: i32) {
-    let r_ceil = r.ceil() as i32;
-    let r2 = r * r;
-    for dy in -r_ceil..=r_ceil {
-        for dx in -r_ceil..=r_ceil {
-            let fx = dx as f64;
-            let fy = dy as f64;
-            if fx * fx + fy * fy <= r2 {
-                put_clamped(img, cx as i32 + dx, cy as i32 + dy, w, h, color);
+    for y in bound_min_y..=bound_max_y {
+        for x in bound_min_x..=bound_max_x {
+            let px = x as f64 + 0.5;
+            let py = y as f64 + 0.5;
+            // Project pixel center onto segment; clamp [0,1] for rounded caps.
+            // For degenerate (len2≈0) lines, force tc=0 so we just compute
+            // distance to the start point (round dot).
+            let tc = if len2 < 0.0001 {
+                0.0
+            } else {
+                (((px - fx0) * dx + (py - fy0) * dy) / len2).clamp(0.0, 1.0)
+            };
+            let proj_x = fx0 + tc * dx;
+            let proj_y = fy0 + tc * dy;
+            let ddx = px - proj_x;
+            let ddy = py - proj_y;
+            let dist = (ddx * ddx + ddy * ddy).sqrt();
+            let coverage = (half_t + 0.5 - dist).clamp(0.0, 1.0) as f32;
+            if coverage > 0.0 {
+                put_blend_image(img, x, y, color, coverage);
             }
         }
     }
@@ -220,19 +245,33 @@ fn fill_triangle(
     p1: (f64, f64),
     p2: (f64, f64),
     color: Rgba<u8>,
-    w: i32,
-    h: i32,
+    _w: i32,
+    _h: i32,
 ) {
+    // 4×4 supersample AA — matches toolbar.rs's fill_triangle. Coverage is
+    // hits / (N*N), blended once per pixel.
     let min_x = p0.0.min(p1.0).min(p2.0).floor() as i32;
     let max_x = p0.0.max(p1.0).max(p2.0).ceil() as i32;
     let min_y = p0.1.min(p1.1).min(p2.1).floor() as i32;
     let max_y = p0.1.max(p1.1).max(p2.1).ceil() as i32;
+    const N: i32 = 4;
+    let step = 1.0 / N as f64;
+    let offset = step / 2.0;
     for y in min_y..=max_y {
         for x in min_x..=max_x {
-            let px = x as f64 + 0.5;
-            let py = y as f64 + 0.5;
-            if point_in_triangle((px, py), p0, p1, p2) {
-                put_clamped(img, x, y, w, h, color);
+            let mut hits = 0i32;
+            for sy in 0..N {
+                for sx in 0..N {
+                    let px = x as f64 + offset + sx as f64 * step;
+                    let py = y as f64 + offset + sy as f64 * step;
+                    if point_in_triangle((px, py), p0, p1, p2) {
+                        hits += 1;
+                    }
+                }
+            }
+            if hits > 0 {
+                let coverage = hits as f32 / (N * N) as f32;
+                put_blend_image(img, x, y, color, coverage);
             }
         }
     }
@@ -305,6 +344,47 @@ fn put_clamped(img: &mut RgbaImage, x: i32, y: i32, w: i32, h: i32, color: Rgba<
     if x >= 0 && y >= 0 && x < w && y < h {
         img.put_pixel(x as u32, y as u32, color);
     }
+}
+
+/// AA pixel writer for softbuffer u32 path.
+/// Blends `color` (0x00RRGGBB) into the buffer at (x, y) by `coverage`
+/// in a single pass (no overlap accumulation).
+fn put_blend_buf(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, color: u32, coverage: f32) {
+    if coverage <= 0.0 || x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
+        return;
+    }
+    let idx = (y as u32 * w + x as u32) as usize;
+    let bg = buf[idx];
+    let a = coverage.clamp(0.0, 1.0);
+    let inv = 1.0 - a;
+    let fr = ((color >> 16) & 0xFF) as f32;
+    let fg = ((color >> 8) & 0xFF) as f32;
+    let fb = (color & 0xFF) as f32;
+    let br = ((bg >> 16) & 0xFF) as f32;
+    let bgc = ((bg >> 8) & 0xFF) as f32;
+    let bb = (bg & 0xFF) as f32;
+    buf[idx] = (((fr * a + br * inv) as u32) << 16)
+        | (((fg * a + bgc * inv) as u32) << 8)
+        | ((fb * a + bb * inv) as u32);
+}
+
+/// AA pixel writer for image::RgbaImage path. Preserves destination alpha so
+/// overlapping text annotations can still blend correctly (Iter 5b decision).
+fn put_blend_image(img: &mut RgbaImage, x: i32, y: i32, color: Rgba<u8>, coverage: f32) {
+    if coverage <= 0.0 {
+        return;
+    }
+    let (w, h) = (img.width() as i32, img.height() as i32);
+    if x < 0 || y < 0 || x >= w || y >= h {
+        return;
+    }
+    let a = coverage.clamp(0.0, 1.0);
+    let inv = 1.0 - a;
+    let bg = img.get_pixel(x as u32, y as u32);
+    let r = (color[0] as f32 * a + bg[0] as f32 * inv) as u8;
+    let g = (color[1] as f32 * a + bg[1] as f32 * inv) as u8;
+    let b = (color[2] as f32 * a + bg[2] as f32 * inv) as u8;
+    img.put_pixel(x as u32, y as u32, Rgba([r, g, b, bg[3]]));
 }
 
 // --- buf-path helpers (live softbuffer preview) ---
@@ -495,30 +575,41 @@ fn draw_line_thick_buf(
     color: u32,
     thickness: i32,
 ) {
-    let (fx, fy) = (from.0 as f64, from.1 as f64);
-    let (tx, ty) = (to.0 as f64, to.1 as f64);
-    let dx = tx - fx;
-    let dy = ty - fy;
-    let len = (dx * dx + dy * dy).sqrt().max(1.0);
-    let steps = (len.ceil() as i32).max(1);
-    let r = thickness as f64 / 2.0;
-    for i in 0..=steps {
-        let t = i as f64 / steps as f64;
-        let x = fx + dx * t;
-        let y = fy + dy * t;
-        fill_disk_buf(buf, w, h, x, y, r, color);
+    // Per-pixel distance-coverage AA (buf variant). One blend pass per pixel.
+    if thickness <= 0 {
+        return;
     }
-}
+    let half_t = thickness as f64 / 2.0;
+    let fx0 = from.0 as f64;
+    let fy0 = from.1 as f64;
+    let fx1 = to.0 as f64;
+    let fy1 = to.1 as f64;
+    let dx = fx1 - fx0;
+    let dy = fy1 - fy0;
+    let len2 = dx * dx + dy * dy;
+    let bound_min_x = (fx0.min(fx1) - half_t - 1.0).floor() as i32;
+    let bound_max_x = (fx0.max(fx1) + half_t + 1.0).ceil() as i32;
+    let bound_min_y = (fy0.min(fy1) - half_t - 1.0).floor() as i32;
+    let bound_max_y = (fy0.max(fy1) + half_t + 1.0).ceil() as i32;
 
-fn fill_disk_buf(buf: &mut [u32], w: u32, h: u32, cx: f64, cy: f64, r: f64, color: u32) {
-    let r_ceil = r.ceil() as i32;
-    let r2 = r * r;
-    for dy in -r_ceil..=r_ceil {
-        for dx in -r_ceil..=r_ceil {
-            let fx = dx as f64;
-            let fy = dy as f64;
-            if fx * fx + fy * fy <= r2 {
-                put_buf(buf, w, h, cx as i32 + dx, cy as i32 + dy, color);
+    for y in bound_min_y..=bound_max_y {
+        for x in bound_min_x..=bound_max_x {
+            let px = x as f64 + 0.5;
+            let py = y as f64 + 0.5;
+            // For degenerate (len2≈0) lines, force tc=0 → distance to start.
+            let tc = if len2 < 0.0001 {
+                0.0
+            } else {
+                (((px - fx0) * dx + (py - fy0) * dy) / len2).clamp(0.0, 1.0)
+            };
+            let proj_x = fx0 + tc * dx;
+            let proj_y = fy0 + tc * dy;
+            let ddx = px - proj_x;
+            let ddy = py - proj_y;
+            let dist = (ddx * ddx + ddy * ddy).sqrt();
+            let coverage = (half_t + 0.5 - dist).clamp(0.0, 1.0) as f32;
+            if coverage > 0.0 {
+                put_blend_buf(buf, w, h, x, y, color, coverage);
             }
         }
     }
@@ -562,15 +653,29 @@ fn fill_triangle_buf(
     p2: (f64, f64),
     color: u32,
 ) {
+    // 4×4 supersample AA — matches toolbar.rs's fill_triangle.
     let min_x = p0.0.min(p1.0).min(p2.0).floor() as i32;
     let max_x = p0.0.max(p1.0).max(p2.0).ceil() as i32;
     let min_y = p0.1.min(p1.1).min(p2.1).floor() as i32;
     let max_y = p0.1.max(p1.1).max(p2.1).ceil() as i32;
+    const N: i32 = 4;
+    let step = 1.0 / N as f64;
+    let offset = step / 2.0;
     for y in min_y..=max_y {
         for x in min_x..=max_x {
-            let pf = (x as f64 + 0.5, y as f64 + 0.5);
-            if point_in_triangle(pf, p0, p1, p2) {
-                put_buf(buf, w, h, x, y, color);
+            let mut hits = 0i32;
+            for sy in 0..N {
+                for sx in 0..N {
+                    let px = x as f64 + offset + sx as f64 * step;
+                    let py = y as f64 + offset + sy as f64 * step;
+                    if point_in_triangle((px, py), p0, p1, p2) {
+                        hits += 1;
+                    }
+                }
+            }
+            if hits > 0 {
+                let coverage = hits as f32 / (N * N) as f32;
+                put_blend_buf(buf, w, h, x, y, color, coverage);
             }
         }
     }
@@ -628,8 +733,9 @@ fn draw_ellipse_outline_buf(
     if rx < 1.0 || ry < 1.0 {
         return;
     }
-    let half_thick = thickness as f64 / 2.0;
-    let band = half_thick / rx.min(ry);
+    // Per-pixel distance-coverage AA (buf variant). One pass per pixel.
+    let half_t = thickness as f64 / 2.0;
+    let min_r = rx.min(ry);
     let pad = (thickness + 2).max(2);
     let x_min = tl.0.min(br.0) - pad;
     let x_max = tl.0.max(br.0) + pad;
@@ -637,11 +743,15 @@ fn draw_ellipse_outline_buf(
     let y_max = tl.1.max(br.1) + pad;
     for y in y_min..=y_max {
         for x in x_min..=x_max {
-            let nx = (x as f64 + 0.5 - cx) / rx;
-            let ny = (y as f64 + 0.5 - cy) / ry;
-            let r = (nx * nx + ny * ny).sqrt();
-            if (r - 1.0).abs() <= band {
-                put_buf(buf, w, h, x, y, color);
+            let px = x as f64 + 0.5;
+            let py = y as f64 + 0.5;
+            let nx = (px - cx) / rx;
+            let ny = (py - cy) / ry;
+            let r_norm = (nx * nx + ny * ny).sqrt();
+            let dist = (r_norm - 1.0).abs() * min_r;
+            let coverage = (half_t + 0.5 - dist).clamp(0.0, 1.0) as f32;
+            if coverage > 0.0 {
+                put_blend_buf(buf, w, h, x, y, color, coverage);
             }
         }
     }
