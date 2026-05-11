@@ -1050,7 +1050,7 @@ fn make_macos_key_window(window: &Window) {
 /// Set the NSWindow level via NSWindow.setLevel:.
 /// 1000 = kCGScreenSaverWindowLevel, 1500 = kCGAssistiveTechHighWindowLevel.
 #[cfg(target_os = "macos")]
-fn set_macos_window_level(window: &Window, level: i64) {
+pub(crate) fn set_macos_window_level(window: &Window, level: i64) {
     use crate::macos_objc::{msg_send_set_int, sel};
     let Some(ns_window) = ns_window_of(window) else { return };
     unsafe { msg_send_set_int(ns_window, sel(c"setLevel:"), level) }

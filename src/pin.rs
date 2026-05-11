@@ -19,9 +19,7 @@ pub enum PinOutcome {
 
 pub struct PinWindow {
     pub window: Rc<Window>,
-    #[allow(dead_code)]
     surface: Surface<Rc<Window>, Rc<Window>>,
-    #[allow(dead_code)]
     image: RgbaImage,
     #[allow(dead_code)]
     press_pos: Option<(i32, i32)>,
@@ -60,14 +58,54 @@ pub fn compute_pin_screen_position(
 }
 
 impl PinWindow {
-    /// Stub — actual implementation lands in Task 5.
     #[allow(dead_code)]
     pub fn create(
-        _event_loop: &ActiveEventLoop,
-        _image: RgbaImage,
-        _screen_pos_logical: (i32, i32),
+        event_loop: &ActiveEventLoop,
+        image: RgbaImage,
+        screen_pos_logical: (i32, i32),
+        logical_size: (u32, u32),
     ) -> Result<Self> {
-        anyhow::bail!("PinWindow::create not yet implemented")
+        use anyhow::Context;
+        use softbuffer::Context as SoftContext;
+        use winit::dpi::{LogicalPosition, LogicalSize};
+        use winit::window::WindowAttributes;
+
+        let attrs = WindowAttributes::default()
+            .with_title("quickshot pin")
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_inner_size(LogicalSize::new(
+                logical_size.0 as f64,
+                logical_size.1 as f64,
+            ))
+            .with_position(LogicalPosition::new(
+                screen_pos_logical.0 as f64,
+                screen_pos_logical.1 as f64,
+            ));
+        let win = event_loop
+            .create_window(attrs)
+            .context("pin: create window")?;
+
+        let window = Rc::new(win);
+
+        // NSFloatingWindowLevel = 3. Above normal apps, below the overlay's
+        // 1500 so a fresh capture appears above pins.
+        #[cfg(target_os = "macos")]
+        crate::overlay::set_macos_window_level(&window, 3);
+
+        let context =
+            SoftContext::new(window.clone()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let surface = softbuffer::Surface::new(&context, window.clone())
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        Ok(Self {
+            window,
+            surface,
+            image,
+            press_pos: None,
+            win_pos_at_press: None,
+            last_click: None,
+        })
     }
 
     /// Stub — actual implementation lands in Tasks 7–9.
