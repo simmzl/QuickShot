@@ -108,6 +108,37 @@ impl PinWindow {
         })
     }
 
+    #[allow(dead_code)]
+    pub fn redraw(&mut self) -> Result<()> {
+        use std::num::NonZeroU32;
+
+        let size = self.window.inner_size();
+        let (w, h) = (size.width.max(1), size.height.max(1));
+        self.surface
+            .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        let mut buf = self
+            .surface
+            .buffer_mut()
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        let (iw, ih) = self.image.dimensions();
+        // softbuffer expects 0x00RRGGBB per pixel. The image is RGBA8;
+        // copy + drop alpha. Clip if the window dims and image dims diverge
+        // (shouldn't normally happen — Task 10 sizes the window to match).
+        for y in 0..h.min(ih) {
+            for x in 0..w.min(iw) {
+                let p = self.image.get_pixel(x, y);
+                let argb = ((p[0] as u32) << 16) | ((p[1] as u32) << 8) | (p[2] as u32);
+                buf[(y * w + x) as usize] = argb;
+            }
+        }
+
+        buf.present().map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        Ok(())
+    }
+
     /// Stub — actual implementation lands in Tasks 7–9.
     #[allow(dead_code)]
     pub fn handle_event(&mut self, _event: WindowEvent) -> PinOutcome {
