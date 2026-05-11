@@ -20,6 +20,16 @@ extern "C" {
     pub fn sel_registerName(name: *const u8) -> *mut c_void;
     pub fn objc_getClass(name: *const u8) -> *mut c_void;
 
+    /// Replace (or install) a method implementation on a class. Used to swizzle
+    /// NSWindow.canBecomeKeyWindow to YES so borderless overlay windows can
+    /// receive keyboard events before the first mouse click.
+    pub fn class_replaceMethod(
+        cls: *mut c_void,
+        name: *mut c_void,
+        imp: *const c_void,
+        types: *const u8,
+    ) -> *const c_void;
+
     /// `[obj sel]` returning an object pointer (id).
     #[link_name = "objc_msgSend"]
     pub fn msg_send_id(obj: *mut c_void, sel: *mut c_void) -> *mut c_void;

@@ -148,6 +148,10 @@ impl Overlay {
             // Suppress the default NSWindow appear/order-front animation so the
             // overlay doesn't fade-in or zoom on every capture.
             set_macos_window_animation_none(&win);
+            // canBecomeKeyWindow must return YES for ESC/Enter to be delivered
+            // before any mouse click. Apply once per process; harmless to call
+            // again on subsequent overlay opens.
+            ensure_nswindow_can_become_key();
             // Without this, ESC/Enter before the first mouse click are dropped
             // because the borderless high-level window isn't automatically key.
             make_macos_key_window(&win);
@@ -958,6 +962,56 @@ fn ns_window_of(window: &Window) -> Option<*mut std::ffi::c_void> {
         crate::macos_objc::msg_send_id(ns_view, crate::macos_objc::sel(c"window"))
     };
     if ns_window.is_null() { None } else { Some(ns_window) }
+}
+
+/// Force NSWindow.canBecomeKeyWindow to return YES so the overlay's borderless
+/// window can actually receive keyboard events before the first mouse click.
+/// Without this, ESC / Enter typed in Idle state are silently dropped: by
+/// AppKit default a window with NSWindowStyleMaskBorderless returns NO from
+/// canBecomeKeyWindow, so makeKeyAndOrderFront: is silently a no-op until a
+/// click hit-tests up the first responder.
+///
+/// We use Objective-C class_replaceMethod to swap the implementation
+/// process-wide. Side-effect is bounded: the overlay is the only NSWindow in
+/// this process (tray-icon uses NSStatusBar, not NSWindow).
+///
+/// Idempotent via OnceLock — only swizzles once per process even if the
+/// overlay is created multiple times.
+#[cfg(target_os = "macos")]
+fn ensure_nswindow_can_become_key() {
+    use std::sync::OnceLock;
+    static APPLIED: OnceLock<()> = OnceLock::new();
+    APPLIED.get_or_init(|| {
+        unsafe extern "C" fn returns_yes(
+            _self: *mut std::ffi::c_void,
+            _sel: *mut std::ffi::c_void,
+        ) -> i8 {
+            1 // YES (Objective-C BOOL is signed char on Apple ABIs).
+        }
+        unsafe {
+            let ns_window_class =
+                crate::macos_objc::objc_getClass(c"NSWindow".as_ptr().cast());
+            if ns_window_class.is_null() {
+                eprintln!(
+                    "quickshot: NSWindow class not found; can't swizzle canBecomeKeyWindow"
+                );
+                return;
+            }
+            let sel =
+                crate::macos_objc::sel_registerName(c"canBecomeKeyWindow".as_ptr().cast());
+            // Type encoding: "c@:" = returns signed-char (BOOL), self id, SEL.
+            // Modern runtimes also accept "B@:" (explicit BOOL), but historic
+            // BOOL = signed char and "c" is the canonical encoding on 64-bit.
+            let imp_ptr = returns_yes as *const std::ffi::c_void;
+            crate::macos_objc::class_replaceMethod(
+                ns_window_class,
+                sel,
+                imp_ptr,
+                c"c@:".as_ptr().cast(),
+            );
+            eprintln!("quickshot: swizzled NSWindow.canBecomeKeyWindow -> YES");
+        }
+    });
 }
 
 /// Promote the NSWindow to key-and-main so it receives keyboard events.
