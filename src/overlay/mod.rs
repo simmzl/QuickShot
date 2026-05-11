@@ -441,6 +441,10 @@ impl Overlay {
                         self.window.request_redraw();
                         return Outcome::Continue;
                     }
+                    toolbar::ToolbarHit::Pin => {
+                        // Wired in Task 3.
+                        return Outcome::Continue;
+                    }
                     toolbar::ToolbarHit::None => {}
                 }
 

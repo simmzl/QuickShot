@@ -27,6 +27,7 @@ pub struct Toolbar {
     pub tool_buttons: Vec<ToolButton>,
     pub undo_button: IconButton,
     pub redo_button: IconButton,
+    pub pin_button: IconButton,
     pub color_buttons: Vec<ColorButton>,
     pub stroke_buttons: Vec<StrokeButton>,
 }
@@ -59,6 +60,7 @@ pub enum ToolbarHit {
     Tool(Tool),
     Undo,
     Redo,
+    Pin,
     Color(Color),
     Stroke(Stroke),
     None,
@@ -77,7 +79,10 @@ impl Toolbar {
         // Row 1: tools + sep + undo + redo (existing math, but TOOL_ORDER is now 7).
         let tools_w = TOOL_ORDER.len() as i32 * ICON_SIZE
             + (TOOL_ORDER.len() as i32 - 1) * ICON_PAD;
-        let row1_content_w = tools_w + SEP_WIDTH + (ICON_SIZE + ICON_PAD) + ICON_SIZE;
+        let row1_content_w = tools_w
+            + SEP_WIDTH
+            + (ICON_SIZE + ICON_PAD) + ICON_SIZE
+            + ICON_PAD + ICON_SIZE;
         let row1_w = row1_content_w + 2 * ICON_PAD;
 
         // Row 2: 4 swatches + sep + 3 stroke dots.
@@ -137,6 +142,11 @@ impl Toolbar {
             origin: (x, row1_y),
             size: (ICON_SIZE, ICON_SIZE),
         };
+        x += ICON_SIZE + ICON_PAD;
+        let pin_button = IconButton {
+            origin: (x, row1_y),
+            size: (ICON_SIZE, ICON_SIZE),
+        };
 
         // Row 2 — colors + strokes.
         let row2_x_start = bar_x + (bar_w - row2_content_w) / 2;
@@ -170,6 +180,7 @@ impl Toolbar {
             tool_buttons,
             undo_button,
             redo_button,
+            pin_button,
             color_buttons,
             stroke_buttons,
         }
@@ -186,6 +197,10 @@ impl Toolbar {
         }
         if point_in(cursor, self.redo_button.origin, self.redo_button.size) {
             return ToolbarHit::Redo;
+        }
+        // Pin is row 1 (always clickable, even under Mosaic).
+        if point_in(cursor, self.pin_button.origin, self.pin_button.size) {
+            return ToolbarHit::Pin;
         }
         // Row 2 disabled under Mosaic (style isn't applied).
         if active_tool == Tool::Mosaic {
@@ -239,6 +254,8 @@ pub fn draw_toolbar(
     draw_icon_undo(buf, win_w, win_h, toolbar.undo_button.origin, undo_color);
     let redo_color = if can_redo { 0xFFFFFF } else { 0x888888 };
     draw_icon_redo(buf, win_w, win_h, toolbar.redo_button.origin, redo_color);
+    // Pin icon is always white (no enabled/disabled state).
+    draw_icon_pin_thumbtack(buf, win_w, win_h, toolbar.pin_button.origin, 0xFFFFFF);
 
     // Row 2 — disabled (faded) when Mosaic is active.
     let row2_alpha: f32 = if current_tool == Tool::Mosaic { 0.4 } else { 1.0 };
@@ -558,6 +575,24 @@ fn draw_icon_redo(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
     stroke_line(buf, w, h, tip.0, tip.1, bot.0, bot.1, STROKE, color);
 }
 
+fn draw_icon_pin_thumbtack(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
+    // Thumbtack: a horizontal head bar at top-center, a vertical needle below.
+    let pad = ICON_SIZE / 5;
+    let cx = o.0 + ICON_SIZE / 2;
+    // Head: a wide bar near the top.
+    let head_w = ICON_SIZE - 2 * pad - 4 * UI_SCALE;
+    let head_h = 4 * UI_SCALE;
+    let head_x = cx - head_w / 2;
+    let head_y = o.1 + pad;
+    fill_rect(buf, w, h, head_x, head_y, head_w, head_h, color);
+    // Stem (needle): vertical line below the head down to near the bottom.
+    let stem_h = ICON_SIZE - pad - (head_y - o.1) - head_h;
+    fill_rect(buf, w, h, cx - STROKE / 2, head_y + head_h, STROKE, stem_h, color);
+    // Tip: a small fat dot at the bottom of the stem to suggest a piercing point.
+    let tip_y = head_y + head_h + stem_h - 2 * UI_SCALE;
+    fill_rect(buf, w, h, cx - STROKE, tip_y, STROKE * 2, 2 * UI_SCALE, color);
+}
+
 // --- primitive drawing helpers (all operate on softbuffer ARGB u32) ---
 
 fn put(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, color: u32) {
@@ -847,5 +882,33 @@ mod tests {
         let yellow = &t.color_buttons[1];
         let c = (yellow.origin.0 + 4, yellow.origin.1 + 4);
         assert_eq!(t.hit_with_tool(c, Tool::Mosaic), ToolbarHit::None);
+    }
+
+    #[test]
+    fn toolbar_has_pin_button() {
+        let t = Toolbar::layout(sel(), (1440, 900));
+        // Pin button sits to the right of redo on row 1.
+        assert!(t.pin_button.origin.0 > t.redo_button.origin.0);
+        // Same vertical center as the rest of row 1.
+        assert_eq!(t.pin_button.origin.1, t.redo_button.origin.1);
+        // Same size as other icons.
+        assert_eq!(t.pin_button.size, (ICON_SIZE, ICON_SIZE));
+    }
+
+    #[test]
+    fn hit_pin_button() {
+        let t = Toolbar::layout(sel(), (1440, 900));
+        let p = &t.pin_button;
+        let c = (p.origin.0 + 5, p.origin.1 + 5);
+        assert_eq!(t.hit_with_tool(c, Tool::Move), ToolbarHit::Pin);
+    }
+
+    #[test]
+    fn hit_pin_button_works_under_mosaic() {
+        // Row 2 is greyed under Mosaic, but row 1 (incl. pin) stays clickable.
+        let t = Toolbar::layout(sel(), (1440, 900));
+        let p = &t.pin_button;
+        let c = (p.origin.0 + 5, p.origin.1 + 5);
+        assert_eq!(t.hit_with_tool(c, Tool::Mosaic), ToolbarHit::Pin);
     }
 }
