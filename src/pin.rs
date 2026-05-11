@@ -108,7 +108,6 @@ impl PinWindow {
         })
     }
 
-    #[allow(dead_code)]
     pub fn redraw(&mut self) -> Result<()> {
         use std::num::NonZeroU32;
 
@@ -139,10 +138,18 @@ impl PinWindow {
         Ok(())
     }
 
-    /// Stub — actual implementation lands in Tasks 7–9.
     #[allow(dead_code)]
-    pub fn handle_event(&mut self, _event: WindowEvent) -> PinOutcome {
-        PinOutcome::Continue
+    pub fn handle_event(&mut self, event: WindowEvent) -> PinOutcome {
+        match event {
+            WindowEvent::RedrawRequested => {
+                if let Err(e) = self.redraw() {
+                    eprintln!("pin redraw error: {e:?}");
+                }
+                PinOutcome::Continue
+            }
+            WindowEvent::CloseRequested => PinOutcome::Closed,
+            _ => PinOutcome::Continue,
+        }
     }
 }
 
