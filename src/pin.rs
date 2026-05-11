@@ -21,10 +21,9 @@ pub struct PinWindow {
     pub window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     image: RgbaImage,
-    #[allow(dead_code)]
     press_pos: Option<(i32, i32)>,
-    #[allow(dead_code)]
     win_pos_at_press: Option<(i32, i32)>,
+    last_cursor: Option<(i32, i32)>,
     #[allow(dead_code)]
     last_click: Option<Instant>,
 }
@@ -104,6 +103,7 @@ impl PinWindow {
             image,
             press_pos: None,
             win_pos_at_press: None,
+            last_cursor: None,
             last_click: None,
         })
     }
@@ -140,6 +140,9 @@ impl PinWindow {
 
     #[allow(dead_code)]
     pub fn handle_event(&mut self, event: WindowEvent) -> PinOutcome {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{ElementState, MouseButton};
+
         match event {
             WindowEvent::RedrawRequested => {
                 if let Err(e) = self.redraw() {
@@ -148,6 +151,46 @@ impl PinWindow {
                 PinOutcome::Continue
             }
             WindowEvent::CloseRequested => PinOutcome::Closed,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                // Single-press: record state for drag detection.
+                self.press_pos = self.last_cursor;
+                let outer = self
+                    .window
+                    .outer_position()
+                    .unwrap_or_default();
+                self.win_pos_at_press = Some((outer.x, outer.y));
+                PinOutcome::Continue
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.press_pos = None;
+                self.win_pos_at_press = None;
+                PinOutcome::Continue
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let cursor = (position.x as i32, position.y as i32);
+                self.last_cursor = Some(cursor);
+                if let (Some(press), Some(win_at_press)) =
+                    (self.press_pos, self.win_pos_at_press)
+                {
+                    let dx = cursor.0 - press.0;
+                    let dy = cursor.1 - press.1;
+                    if dx.abs() + dy.abs() >= 4 {
+                        let new_x = win_at_press.0 + dx;
+                        let new_y = win_at_press.1 + dy;
+                        self.window
+                            .set_outer_position(PhysicalPosition::new(new_x, new_y));
+                    }
+                }
+                PinOutcome::Continue
+            }
             _ => PinOutcome::Continue,
         }
     }
