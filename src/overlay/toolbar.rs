@@ -446,19 +446,33 @@ fn draw_tool_icon(buf: &mut [u32], w: u32, h: u32, tool: Tool, origin: (i32, i32
 }
 
 fn draw_icon_pen(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    // Diagonal nib: solid line from top-right to bottom-left, with a small
-    // triangle (filled) on the bottom-left tip.
-    let pad = ICON_SIZE / 5;
-    let (x0, y0) = (o.0 + ICON_SIZE - pad, o.1 + pad);
-    let (x1, y1) = (o.0 + pad, o.1 + ICON_SIZE - pad);
-    stroke_line(buf, w, h, x0, y0, x1, y1, STROKE, color);
-    // Small filled triangle (nib) at (x1, y1).
-    let nib = 4 * UI_SCALE;
+    // Vertical pencil: eraser cap on top, ferrule gap, fat body, triangular
+    // nib at the bottom. Solid fills (not thin strokes) so it doesn't read as
+    // another arrow / line.
+    let cx = o.0 + ICON_SIZE / 2;
+    let pad = ICON_SIZE / 6;             // top/bottom inset
+    let body_w = 6 * UI_SCALE;           // ~18 px on UI_SCALE=3
+    let eraser_h = 5 * UI_SCALE;         // ~15 px
+    let gap_h = UI_SCALE;                // ~3 px ferrule gap between eraser and body
+    let nib_h = 4 * UI_SCALE;            // ~12 px triangular tip
+    let body_h =
+        ICON_SIZE - 2 * pad - eraser_h - gap_h - nib_h;
+
+    let body_x = cx - body_w / 2;
+    let y_top = o.1 + pad;
+
+    // Eraser cap
+    fill_rect(buf, w, h, body_x, y_top, body_w, eraser_h, color);
+    // Body (skip gap_h to create the visual ferrule break)
+    let body_y = y_top + eraser_h + gap_h;
+    fill_rect(buf, w, h, body_x, body_y, body_w, body_h, color);
+    // Nib triangle pointing down
+    let nib_y_top = body_y + body_h;
     fill_triangle(
         buf, w, h,
-        (x1 as f64, y1 as f64),
-        ((x1 + nib) as f64, y1 as f64),
-        (x1 as f64, (y1 - nib) as f64),
+        (body_x as f64, nib_y_top as f64),
+        ((body_x + body_w) as f64, nib_y_top as f64),
+        (cx as f64, (nib_y_top + nib_h) as f64),
         color,
     );
 }
