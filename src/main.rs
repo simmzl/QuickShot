@@ -11,6 +11,7 @@ mod macos_objc;
 mod notification;
 mod overlay;
 mod permission;
+mod pin;
 mod text;
 mod tray;
 
