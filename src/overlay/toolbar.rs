@@ -21,6 +21,14 @@ const PILL_RADIUS: i32 = 4 * UI_SCALE;
 /// Stroke thickness (pixels) used by all icons. Scales with UI.
 const STROKE: i32 = 4;
 
+/// Brand/theme color used for confirmed-state UI (selection outline,
+/// future hover or accent elements). softbuffer 0x00RRGGBB.
+pub const THEME_COLOR: u32 = 0x00_FF_6B_35;
+
+/// Lighter coral, used for hover / preview state (window snap, etc.).
+/// Roughly THEME_COLOR mixed 50% with white.
+pub const SNAP_PREVIEW_COLOR: u32 = 0x00_FF_A8_88;
+
 pub struct Toolbar {
     pub origin: (i32, i32),
     pub size: (i32, i32),

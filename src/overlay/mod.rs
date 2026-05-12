@@ -793,13 +793,13 @@ impl Overlay {
             (None, OverlayState::Idle, Some(snap)) => {
                 let clamped = snap.clamp_to((w, h));
                 if clamped.w == 0 || clamped.h == 0 {
-                    (None, None, 0x00FFFFFF)
+                    (None, None, toolbar::THEME_COLOR)
                 } else {
                     let tup = clamped.as_tuple_u32();
-                    (Some(clamped), Some(tup), 0x00007AFF) // Color::Blue
+                    (Some(clamped), Some(tup), toolbar::SNAP_PREVIEW_COLOR)
                 }
             }
-            (existing, _, _) => (existing, sel_tuple, 0x00FFFFFF),
+            (existing, _, _) => (existing, sel_tuple, toolbar::THEME_COLOR),
         };
         let show_label = matches!(
             self.state,
