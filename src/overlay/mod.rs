@@ -141,6 +141,9 @@ pub struct Overlay {
     /// the dragged annotation and redraw paints it at the cursor's current
     /// delta from `press_frame`.
     pub(crate) annotation_drag: Option<AnnotationDrag>,
+    /// Annotation under the cursor while Move tool is active and no drag is
+    /// in progress. Drives the faint hover-outline in `redraw`.
+    pub(crate) hovered_annotation_idx: Option<usize>,
 }
 
 impl Overlay {
@@ -248,6 +251,7 @@ impl Overlay {
             snap_at_press: None,
             window_list: snap::enumerate_windows(monitor_geom, std::process::id(), scale_factor),
             annotation_drag: None,
+            hovered_annotation_idx: None,
         })
     }
 
@@ -289,6 +293,32 @@ impl Overlay {
                         // No redraw needed — just update the cursor icon.
                         let icon = hit::cursor_icon_for(hit::classify(self.cursor, rect));
                         self.window.set_cursor(icon);
+
+                        // Move-tool hover: highlight the annotation under cursor.
+                        // Skip while a drag is in progress (the drag state owns
+                        // the highlight then).
+                        if self.tool == annotate::Tool::Move
+                            && self.annotation_drag.is_none()
+                            && rect.contains(self.cursor)
+                        {
+                            let cursor_frame = self.window_point_to_frame_point(self.cursor);
+                            let history_snapshot: Vec<annotate::Annotation> =
+                                self.history.current().to_vec();
+                            let new_hover = annotate_render::annotation_at_cursor(
+                                cursor_frame,
+                                &history_snapshot,
+                                &mut self.font,
+                            );
+                            if new_hover != self.hovered_annotation_idx {
+                                self.hovered_annotation_idx = new_hover;
+                                self.request_redraw_throttled();
+                            }
+                        } else if self.hovered_annotation_idx.is_some() {
+                            // Tool switched away from Move, or cursor outside
+                            // rect — clear hover.
+                            self.hovered_annotation_idx = None;
+                            self.request_redraw_throttled();
+                        }
                     }
                     OverlayState::Idle => {
                         if let Some(start) = self.press_pos {
@@ -457,6 +487,7 @@ impl Overlay {
                 match tb.hit_with_tool(self.cursor, self.tool) {
                     toolbar::ToolbarHit::Tool(t) => {
                         self.pending_draw = None;
+                        self.hovered_annotation_idx = None;
                         if let OverlayState::Adjusting { rect: r, .. } = self.state {
                             self.state = OverlayState::Adjusting { rect: r, edit: None };
                         }
@@ -786,6 +817,7 @@ impl Overlay {
                 };
                 if let Some(t) = new_tool {
                     self.pending_draw = None;
+                    self.hovered_annotation_idx = None;
                     if let OverlayState::Adjusting { rect, edit: _ } = self.state {
                         self.state = OverlayState::Adjusting { rect, edit: None };
                     }
@@ -935,6 +967,8 @@ impl Overlay {
         let frame_size = self.frame.dimensions();
         let window_size = (w, h);
         let cursor = self.cursor;
+        let hovered_idx = self.hovered_annotation_idx;
+        let active_tool = self.tool;
         let frame_ref = &self.frame;
         let font = &mut self.font;
         let icon_font = &mut self.icon_font;
@@ -973,6 +1007,25 @@ impl Overlay {
                 );
             }
 
+            // Hover highlight: faint SNAP_PREVIEW_COLOR outline around the
+            // annotation under the cursor (Move tool, no drag in progress).
+            // Paint BEFORE the drag block so the drag's THEME_COLOR outline
+            // wins if both somehow apply.
+            if active_tool == annotate::Tool::Move && self.annotation_drag.is_none() {
+                if let Some(idx) = hovered_idx {
+                    if let Some(ann) = self.history.current().get(idx) {
+                        let bbox_frame = annotate_render::annotation_bbox(ann, font);
+                        if let Some(bbox_win) = annotate_render::frame_rect_to_window_rect(
+                            bbox_frame, frame_size, window_size,
+                        ) {
+                            render::draw_selection_outline(
+                                &mut buf, w, h, bbox_win, toolbar::SNAP_PREVIEW_COLOR,
+                            );
+                        }
+                    }
+                }
+            }
+
             // Dragged annotation preview (Move tool drag in progress). The
             // annotation was removed from history at press time; we paint a
             // translated copy at the current cursor delta.
@@ -991,6 +1044,14 @@ impl Overlay {
                 annotate_render::draw_annotation_on_buf(
                     &mut buf, w, h, frame_ref, &translated, font,
                 );
+                let bbox_frame = annotate_render::annotation_bbox(&translated, font);
+                if let Some(bbox_win) = annotate_render::frame_rect_to_window_rect(
+                    bbox_frame, frame_size, window_size,
+                ) {
+                    render::draw_selection_outline(
+                        &mut buf, w, h, bbox_win, toolbar::THEME_COLOR,
+                    );
+                }
             }
 
             // Live TextEdit: blink toggle pass (mut), then render pass (immut).

@@ -502,6 +502,86 @@ fn point_near_segment(p: (i32, i32), a: (i32, i32), b: (i32, i32), tol_px: i32) 
     dist <= tol_px as f64
 }
 
+/// Frame-space bounding rectangle of an annotation, padded slightly to
+/// accommodate stroke width. Used by the Move-tool hover/drag highlight.
+pub fn annotation_bbox(
+    ann: &Annotation,
+    font: &mut crate::text::Font,
+) -> Rect {
+    match ann {
+        Annotation::Arrow { from, to, style } => {
+            let min_x = from.0.min(to.0);
+            let max_x = from.0.max(to.0);
+            let min_y = from.1.min(to.1);
+            let max_y = from.1.max(to.1);
+            let pad = style.stroke.px() + 4;
+            Rect {
+                x: min_x - pad,
+                y: min_y - pad,
+                w: (max_x - min_x) + pad * 2,
+                h: (max_y - min_y) + pad * 2,
+            }
+        }
+        Annotation::Rect { rect, style } | Annotation::Ellipse { rect, style } => {
+            let pad = style.stroke.px() + 2;
+            Rect {
+                x: rect.x - pad,
+                y: rect.y - pad,
+                w: rect.w + pad * 2,
+                h: rect.h + pad * 2,
+            }
+        }
+        Annotation::Mosaic { rect, .. } => Rect {
+            x: rect.x - 2,
+            y: rect.y - 2,
+            w: rect.w + 4,
+            h: rect.h + 4,
+        },
+        Annotation::Pen { points, style } => {
+            if points.is_empty() {
+                return Rect { x: 0, y: 0, w: 0, h: 0 };
+            }
+            let min_x = points.iter().map(|p| p.0).min().unwrap();
+            let max_x = points.iter().map(|p| p.0).max().unwrap();
+            let min_y = points.iter().map(|p| p.1).min().unwrap();
+            let max_y = points.iter().map(|p| p.1).max().unwrap();
+            let pad = style.stroke.px() + 4;
+            Rect {
+                x: min_x - pad,
+                y: min_y - pad,
+                w: (max_x - min_x) + pad * 2,
+                h: (max_y - min_y) + pad * 2,
+            }
+        }
+        Annotation::Text { .. } => text_bbox(ann, font).unwrap_or(Rect { x: 0, y: 0, w: 0, h: 0 }),
+    }
+}
+
+/// Map a frame-space rectangle to a window-space tuple `(x, y, w, h)`.
+/// Returns `None` for degenerate input (w or h ≤ 0). Used by the Move-tool
+/// hover/drag highlight to convert `annotation_bbox` output to the
+/// `draw_selection_outline` input shape.
+pub fn frame_rect_to_window_rect(
+    rect: Rect,
+    frame_size: (u32, u32),
+    window_size: (u32, u32),
+) -> Option<(u32, u32, u32, u32)> {
+    if rect.w <= 0 || rect.h <= 0 {
+        return None;
+    }
+    let tl = frame_to_window((rect.x, rect.y), frame_size, window_size);
+    let br = frame_to_window(
+        (rect.x + rect.w - 1, rect.y + rect.h - 1),
+        frame_size,
+        window_size,
+    );
+    let x = tl.0.max(0) as u32;
+    let y = tl.1.max(0) as u32;
+    let w = (br.0 - tl.0 + 1).max(1) as u32;
+    let h = (br.1 - tl.1 + 1).max(1) as u32;
+    Some((x, y, w, h))
+}
+
 /// Compute the rendered bounding box (in frame-space) of a Text annotation.
 /// Returns None for non-Text variants or content that produces no lines.
 ///
