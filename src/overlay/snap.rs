@@ -81,7 +81,11 @@ pub fn enumerate_windows(
         }
 
         let Some(layer) = read_i64(dict, "kCGWindowLayer") else { continue };
-        if layer != 0 {
+        // Accept normal app windows (0), floating panels like iTerm's hotkey
+        // window or "always on top" tools (3), and modal panels (8). Drop
+        // everything else: dock (20), menu bar (25), popup menus (101+),
+        // wallpaper (negative), our own overlay (1500), etc.
+        if !matches!(layer, 0 | 3 | 8) {
             continue;
         }
         let layer = layer as i32;
