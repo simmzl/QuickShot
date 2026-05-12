@@ -94,3 +94,32 @@ impl IconFont {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Guards the font subset: every codepoint referenced in the toolbar must
+    /// still produce a non-empty glyph after `pyftsubset`. If someone adds a
+    /// new icon without updating the subset's `--unicodes` list, this test
+    /// will catch it — `metrics.width` and `metrics.height` are both 0 for
+    /// missing glyphs in fontdue.
+    #[test]
+    fn subset_includes_all_needed_glyphs() {
+        let font = IconFont::embedded();
+        let codepoints = [
+            '\u{E121}', '\u{E493}', '\u{E167}', '\u{E076}',
+            '\u{E1F9}', '\u{E198}', '\u{E4FF}', '\u{E2A1}',
+            '\u{E2A0}', '\u{E259}', '\u{E14D}',
+        ];
+        let inner = font.inner.as_ref().expect("font loaded");
+        for ch in codepoints {
+            let m = inner.metrics(ch, 24.0);
+            assert!(
+                m.width > 0 || m.height > 0,
+                "codepoint {:#x} should have glyph data after subset",
+                ch as u32,
+            );
+        }
+    }
+}
