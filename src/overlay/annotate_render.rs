@@ -432,6 +432,39 @@ pub fn draw_pen_on_buf(
     }
 }
 
+/// Compute the rendered bounding box (in frame-space) of a Text annotation.
+/// Returns None for non-Text variants or content that produces no lines.
+///
+/// Used by Tool::Text click handling to test whether the user clicked on an
+/// existing text annotation (so it can be lifted back into edit mode).
+pub fn text_bbox(
+    ann: &Annotation,
+    font: &mut crate::text::Font,
+) -> Option<Rect> {
+    let Annotation::Text { origin, content, style } = ann else { return None };
+    let px_size = style.stroke.font_px();
+    let line_height = (px_size * LINE_HEIGHT_RATIO).round() as i32;
+    // Normalize line endings the same way `paint_text_on_image` /
+    // `draw_text_on_buf` do, so the bbox we report matches what gets rendered.
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized.split('\n').collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let max_width = lines
+        .iter()
+        .map(|line| font.measure_text_width(line, px_size).ceil() as i32)
+        .max()
+        .unwrap_or(0);
+    let total_height = lines.len() as i32 * line_height;
+    Some(Rect {
+        x: origin.0,
+        y: origin.1,
+        w: max_width.max(1),
+        h: total_height.max(1),
+    })
+}
+
 /// Paint multi-line text into an `RgbaImage` (export path). `origin` is the
 /// crop-local pen position of the first line; subsequent lines step down by
 /// `1.2 * px_size`. Color/font size come from `style`.

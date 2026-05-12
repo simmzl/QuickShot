@@ -54,6 +54,20 @@ impl TextEdit {
         }
     }
 
+    /// Constructor for re-editing a committed Text annotation: pre-fills the
+    /// buffer with the existing content. Used when the user clicks on a Text
+    /// annotation with `Tool::Text` active — the annotation is removed from
+    /// history and lifted into edit mode so it can be modified in place.
+    pub fn with_content(origin_frame: (i32, i32), content: String) -> Self {
+        Self {
+            origin_frame,
+            buffer: content,
+            preedit: String::new(),
+            last_blink: std::time::Instant::now(),
+            cursor_visible: true,
+        }
+    }
+
     /// Append a printable character to the buffer. Returns true if the buffer
     /// changed (so the caller can request a redraw).
     /// Backspace / Delete / control characters are ignored here — the caller
@@ -461,24 +475,56 @@ impl Overlay {
                     toolbar::ToolbarHit::None => {}
                 }
 
-                // Tool::Text: clicks always commit any in-flight TextEdit
-                // (regardless of whether the click is inside or outside the
-                // rect — outside-click clears, inside-click restarts at the
-                // new point). Goes BEFORE the is_drawing() check so Text-tool
-                // clicks don't fall into the Pen/Shape branch. Toolbar hit
-                // check stays earlier so toolbar clicks still work when Text
-                // tool is active.
-                if self.tool == annotate::Tool::Text {
-                    self.commit_text_edit();
-                    if rect.contains(self.cursor) {
-                        let fp = self.window_point_to_frame_point(self.cursor);
-                        self.text_edit = Some(TextEdit::new(fp));
+                // Tool::Text: clicks inside the selection rect either lift an
+                // existing Text annotation back into edit mode (when the click
+                // lands on its rendered bbox) or commit-then-start a fresh
+                // edit at the click point. Goes BEFORE the is_drawing() check
+                // so Text-tool clicks don't fall into the Pen/Shape branch.
+                // Toolbar hit check stays earlier so toolbar clicks still
+                // work when Text tool is active.
+                if self.tool == annotate::Tool::Text && rect.contains(self.cursor) {
+                    let cursor_frame = self.window_point_to_frame_point(self.cursor);
+
+                    // Hit-test existing Text annotations in reverse z-order
+                    // (latest-drawn = on top). If we land on one, lift it back
+                    // into edit mode.
+                    let history_anns: Vec<annotate::Annotation> =
+                        self.history.current().to_vec();
+                    let hit_idx = history_anns
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find(|(_, ann)| {
+                            annotate_render::text_bbox(ann, &mut self.font)
+                                .is_some_and(|bb| bb.contains(cursor_frame))
+                        })
+                        .map(|(i, _)| i);
+
+                    if let Some(idx) = hit_idx {
+                        // Commit any in-flight text BEFORE replacing it with
+                        // the one we just lifted from history.
+                        self.commit_text_edit();
+                        if let Some(annotate::Annotation::Text { origin, content, style }) =
+                            self.history.remove_at(idx)
+                        {
+                            self.text_edit = Some(TextEdit::with_content(origin, content));
+                            self.current_style = style;
+                        }
                         self.window.request_redraw();
                         return Outcome::Continue;
                     }
-                    // Click outside rect: text_edit is now committed/cleared.
-                    // Fall through to the Move-tool arm below for the existing
-                    // anchor / outside-click-clear behavior.
+
+                    // No hit — existing behavior: commit current text, start fresh.
+                    self.commit_text_edit();
+                    self.text_edit = Some(TextEdit::new(cursor_frame));
+                    self.window.request_redraw();
+                    return Outcome::Continue;
+                }
+                if self.tool == annotate::Tool::Text {
+                    // Outside the selection rect: commit any in-flight text
+                    // and fall through to the Move-tool arm below for the
+                    // existing anchor / outside-click-clear behavior.
+                    self.commit_text_edit();
                 }
 
                 // Hit-test the cursor against the selection rect first. The

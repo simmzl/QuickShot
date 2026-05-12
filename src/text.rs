@@ -27,6 +27,41 @@ impl Font {
         }
     }
 
+    /// Return the rendered pixel width of `text` at `px_size`. Walks the
+    /// chars and sums `advance_width` from freshly-computed metrics. Returns
+    /// 0.0 if both the embedded primary and CJK fallback fonts failed to load.
+    ///
+    /// The `&mut self` receiver is for API consistency with `rasterize`/
+    /// `render_text` — internally this only calls `fontdue::Font::metrics`
+    /// (`&self`), so no caching mutation actually happens here.
+    pub fn measure_text_width(&mut self, text: &str, px_size: f32) -> f32 {
+        if self.primary.is_none() && self.cjk_fallback.is_none() {
+            return 0.0;
+        }
+        let mut w = 0.0_f32;
+        for ch in text.chars() {
+            // Mirror the font-selection logic in `rasterize`: try primary
+            // first if it has the glyph, then CJK fallback. If neither has
+            // it, advance by an em-half (matches the empty-bitmap branch in
+            // `render_text`).
+            let advance = self
+                .primary
+                .as_ref()
+                .and_then(|font| {
+                    (font.lookup_glyph_index(ch) != 0)
+                        .then(|| font.metrics(ch, px_size).advance_width)
+                })
+                .or_else(|| {
+                    self.cjk_fallback.as_ref().and_then(|font| {
+                        (font.lookup_glyph_index(ch) != 0)
+                            .then(|| font.metrics(ch, px_size).advance_width)
+                    })
+                });
+            w += advance.unwrap_or(px_size * 0.5);
+        }
+        w
+    }
+
     fn rasterize(
         &mut self,
         ch: char,

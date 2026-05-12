@@ -226,6 +226,18 @@ impl History {
     pub fn can_redo(&self) -> bool {
         !self.redo_stack.is_empty()
     }
+
+    /// Remove the annotation at index `idx` from the undo stack and return it.
+    /// Clears the redo stack (the timeline diverged). Returns None if idx is
+    /// out of bounds.
+    pub fn remove_at(&mut self, idx: usize) -> Option<Annotation> {
+        if idx >= self.undo_stack.len() {
+            return None;
+        }
+        let removed = self.undo_stack.remove(idx);
+        self.redo_stack.clear();
+        Some(removed)
+    }
 }
 
 impl Default for History {
@@ -494,5 +506,27 @@ mod tests {
         };
         h.push(a.clone());
         assert_eq!(h.current(), &[a]);
+    }
+
+    #[test]
+    fn history_remove_at_middle() {
+        let mut h = History::new();
+        let style = AnnotationStyle::default();
+        h.push(Annotation::Rect { rect: Rect { x: 0, y: 0, w: 1, h: 1 }, style });
+        h.push(Annotation::Rect { rect: Rect { x: 1, y: 1, w: 1, h: 1 }, style });
+        h.push(Annotation::Rect { rect: Rect { x: 2, y: 2, w: 1, h: 1 }, style });
+        let removed = h.remove_at(1).unwrap();
+        match removed {
+            Annotation::Rect { rect, .. } => assert_eq!(rect, Rect { x: 1, y: 1, w: 1, h: 1 }),
+            _ => panic!(),
+        }
+        assert_eq!(h.current().len(), 2);
+    }
+
+    #[test]
+    fn history_remove_at_out_of_bounds_returns_none() {
+        let mut h = History::new();
+        assert!(h.remove_at(0).is_none());
+        assert!(h.remove_at(100).is_none());
     }
 }
