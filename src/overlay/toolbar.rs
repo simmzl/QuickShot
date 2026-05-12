@@ -23,7 +23,7 @@ const PILL_RADIUS: i32 = 4 * UI_SCALE;
 // is the Private Use Area codepoint that maps to the named SVG icon in
 // the bundled `assets/fonts/lucide.ttf`.
 const ICON_MOVE: char       = '\u{e121}'; // move
-const ICON_ARROW: char      = '\u{e04d}'; // arrow-up-right
+const ICON_ARROW: char      = '\u{e493}'; // move-up-right
 const ICON_SQUARE: char     = '\u{e167}'; // square
 const ICON_CIRCLE: char     = '\u{e076}'; // circle
 const ICON_PENCIL: char     = '\u{e1f9}'; // pencil
