@@ -432,6 +432,76 @@ pub fn draw_pen_on_buf(
     }
 }
 
+/// Hit-test annotations in reverse z-order (topmost first). Returns the
+/// index of the first annotation whose footprint contains `cursor_frame`,
+/// or None. Useful when the user clicks to grab an annotation.
+///
+/// Footprint per variant (frame-space coords):
+/// - Arrow: tolerance band around the line segment (width = stroke.px() * 2).
+/// - Rect: outline OR interior (so a click anywhere inside the rect grabs it).
+/// - Ellipse: outline OR interior.
+/// - Mosaic: interior (the masked rect).
+/// - Pen: tolerance band around any segment of the path.
+/// - Text: rendered bbox.
+pub fn annotation_at_cursor(
+    cursor_frame: (i32, i32),
+    history: &[Annotation],
+    font: &mut crate::text::Font,
+) -> Option<usize> {
+    history
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, ann)| annotation_contains_point(ann, cursor_frame, font))
+        .map(|(i, _)| i)
+}
+
+fn annotation_contains_point(
+    ann: &Annotation,
+    p: (i32, i32),
+    font: &mut crate::text::Font,
+) -> bool {
+    match ann {
+        Annotation::Arrow { from, to, style } => {
+            point_near_segment(p, *from, *to, (style.stroke.px() * 2).max(8))
+        }
+        Annotation::Rect { rect, .. } | Annotation::Mosaic { rect, .. } => rect.contains(p),
+        Annotation::Ellipse { rect, .. } => rect.contains(p),
+        Annotation::Pen { points, style } => {
+            let tol = (style.stroke.px() * 2).max(8);
+            points.windows(2).any(|win| point_near_segment(p, win[0], win[1], tol))
+        }
+        Annotation::Text { .. } => text_bbox(ann, font)
+            .is_some_and(|bb| bb.contains(p)),
+    }
+}
+
+/// Manhattan-ish perpendicular distance from a point to a segment, with a
+/// tolerance threshold. Returns true if the point is within `tol_px` of the
+/// segment (treats it as a "fat line" with rounded endpoints).
+fn point_near_segment(p: (i32, i32), a: (i32, i32), b: (i32, i32), tol_px: i32) -> bool {
+    let px = p.0 as f64;
+    let py = p.1 as f64;
+    let ax = a.0 as f64;
+    let ay = a.1 as f64;
+    let bx = b.0 as f64;
+    let by = b.1 as f64;
+    let dx = bx - ax;
+    let dy = by - ay;
+    let len2 = dx * dx + dy * dy;
+    if len2 < 0.0001 {
+        // Degenerate segment — treat as a point.
+        let d = ((px - ax).powi(2) + (py - ay).powi(2)).sqrt();
+        return d <= tol_px as f64;
+    }
+    let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+    let tc = t.clamp(0.0, 1.0);
+    let proj_x = ax + tc * dx;
+    let proj_y = ay + tc * dy;
+    let dist = ((px - proj_x).powi(2) + (py - proj_y).powi(2)).sqrt();
+    dist <= tol_px as f64
+}
+
 /// Compute the rendered bounding box (in frame-space) of a Text annotation.
 /// Returns None for non-Text variants or content that produces no lines.
 ///

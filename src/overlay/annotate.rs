@@ -83,6 +83,41 @@ pub enum Annotation {
     Text    { origin: (i32, i32), content: String, style: AnnotationStyle },
 }
 
+impl Annotation {
+    /// Return a new annotation translated by (dx, dy) in frame-space.
+    /// Used when the user drags an annotation with the Move tool.
+    pub fn translated(&self, dx: i32, dy: i32) -> Annotation {
+        match self {
+            Annotation::Arrow { from, to, style } => Annotation::Arrow {
+                from: (from.0 + dx, from.1 + dy),
+                to: (to.0 + dx, to.1 + dy),
+                style: *style,
+            },
+            Annotation::Rect { rect, style } => Annotation::Rect {
+                rect: rect.translate(dx, dy),
+                style: *style,
+            },
+            Annotation::Ellipse { rect, style } => Annotation::Ellipse {
+                rect: rect.translate(dx, dy),
+                style: *style,
+            },
+            Annotation::Mosaic { rect, block_size } => Annotation::Mosaic {
+                rect: rect.translate(dx, dy),
+                block_size: *block_size,
+            },
+            Annotation::Pen { points, style } => Annotation::Pen {
+                points: points.iter().map(|&(x, y)| (x + dx, y + dy)).collect(),
+                style: *style,
+            },
+            Annotation::Text { origin, content, style } => Annotation::Text {
+                origin: (origin.0 + dx, origin.1 + dy),
+                content: content.clone(),
+                style: *style,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     Move,
@@ -528,5 +563,32 @@ mod tests {
         let mut h = History::new();
         assert!(h.remove_at(0).is_none());
         assert!(h.remove_at(100).is_none());
+    }
+
+    #[test]
+    fn annotation_translate_arrow() {
+        let style = AnnotationStyle::default();
+        let a = Annotation::Arrow { from: (10, 10), to: (20, 30), style };
+        let b = a.translated(5, -3);
+        match b {
+            Annotation::Arrow { from, to, .. } => {
+                assert_eq!(from, (15, 7));
+                assert_eq!(to, (25, 27));
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn annotation_translate_pen() {
+        let style = AnnotationStyle::default();
+        let a = Annotation::Pen { points: vec![(0, 0), (10, 10), (20, 5)], style };
+        let b = a.translated(3, 4);
+        match b {
+            Annotation::Pen { points, .. } => {
+                assert_eq!(points, vec![(3, 4), (13, 14), (23, 9)]);
+            }
+            _ => panic!(),
+        }
     }
 }

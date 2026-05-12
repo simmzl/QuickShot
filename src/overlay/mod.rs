@@ -86,6 +86,20 @@ impl TextEdit {
     }
 }
 
+/// State for an in-progress annotation drag (Move tool). When a press hits an
+/// existing annotation, we lift it out of history into this slot; redraw paints
+/// the dragged copy at the current cursor delta; release pushes the translated
+/// version back into history.
+pub(crate) struct AnnotationDrag {
+    /// Original index in `history.undo_stack` — reserved for a future
+    /// `History::insert_at(idx, ann)` that preserves z-order on restore.
+    /// Currently unused (Esc-restore appends to the end of the stack).
+    #[allow(dead_code)]
+    pub index: usize,
+    pub original: crate::overlay::annotate::Annotation,
+    pub press_frame: (i32, i32),
+}
+
 pub(crate) fn key_to_color(c: char) -> Option<annotate::Color> {
     match c {
         '1' => Some(annotate::Color::Red),
@@ -123,6 +137,10 @@ pub struct Overlay {
     pub(crate) press_pos: Option<(i32, i32)>,
     pub(crate) snap_at_press: Option<Rect>,
     window_list: Vec<snap::WindowEntry>,
+    /// Active annotation drag (Move tool): when present, history excludes
+    /// the dragged annotation and redraw paints it at the cursor's current
+    /// delta from `press_frame`.
+    pub(crate) annotation_drag: Option<AnnotationDrag>,
 }
 
 impl Overlay {
@@ -229,6 +247,7 @@ impl Overlay {
             press_pos: None,
             snap_at_press: None,
             window_list: snap::enumerate_windows(monitor_geom, std::process::id(), scale_factor),
+            annotation_drag: None,
         })
     }
 
@@ -245,6 +264,14 @@ impl Overlay {
                     if let Some(p) = self.pending_draw.as_mut() {
                         p.extend_to(fp);
                     }
+                    self.request_redraw_throttled();
+                    return Outcome::Continue;
+                }
+
+                // If an annotation drag is in flight, redraw — the dragged
+                // annotation is painted at the cursor's current delta from
+                // `press_frame` in `redraw`.
+                if self.annotation_drag.is_some() {
                     self.request_redraw_throttled();
                     return Outcome::Continue;
                 }
@@ -551,7 +578,31 @@ impl Overlay {
                             self.window.request_redraw();
                             return Outcome::Continue;
                         }
-                        // Move tool inside rect → start translate.
+                        // Move tool: hit-test annotations first. If the click
+                        // lands on an existing annotation's footprint, start an
+                        // annotation drag (priority above selection translate).
+                        let cursor_frame = self.window_point_to_frame_point(self.cursor);
+                        let history_snapshot: Vec<annotate::Annotation> =
+                            self.history.current().to_vec();
+                        if let Some(idx) = annotate_render::annotation_at_cursor(
+                            cursor_frame,
+                            &history_snapshot,
+                            &mut self.font,
+                        ) {
+                            // Lift the annotation out of history at press time
+                            // so live drag paints only the dragged copy. On
+                            // release we push the translated version back.
+                            if let Some(original) = self.history.remove_at(idx) {
+                                self.annotation_drag = Some(AnnotationDrag {
+                                    index: idx,
+                                    original,
+                                    press_frame: cursor_frame,
+                                });
+                            }
+                            self.window.request_redraw();
+                            return Outcome::Continue;
+                        }
+                        // No annotation under cursor — translate selection rect.
                         self.state = state::start_translate(rect, self.cursor);
                         self.window.request_redraw();
                         return Outcome::Continue;
@@ -571,6 +622,19 @@ impl Overlay {
             if let Some(ann) = pending.finalize() {
                 self.history.push(ann);
             }
+            self.window.request_redraw();
+            return Outcome::Continue;
+        }
+
+        // Commit an in-flight annotation drag: translate the original by the
+        // total cursor delta and push back to history. `history.push` clears
+        // the redo stack — the drag-edit invalidates redo, which is correct.
+        if let Some(drag) = self.annotation_drag.take() {
+            let cursor_frame = self.window_point_to_frame_point(self.cursor);
+            let dx = cursor_frame.0 - drag.press_frame.0;
+            let dy = cursor_frame.1 - drag.press_frame.1;
+            let translated = drag.original.translated(dx, dy);
+            self.history.push(translated);
             self.window.request_redraw();
             return Outcome::Continue;
         }
@@ -755,6 +819,17 @@ impl Overlay {
                     self.window.request_redraw();
                     return Outcome::Continue;
                 }
+                // If a drag is in progress, abort the drag rather than the overlay.
+                // Restore the original annotation to history. Note: `push`
+                // appends to the end of the undo stack, so the annotation
+                // re-appears at the top of z-order rather than its original
+                // `drag.index`. Minor visual quirk: a re-appearing annotation
+                // jumps to the topmost layer.
+                if let Some(drag) = self.annotation_drag.take() {
+                    self.history.push(drag.original);
+                    self.window.request_redraw();
+                    return Outcome::Continue;
+                }
                 match state::on_escape(self.state) {
                     Transition::Cancel => Outcome::Cancelled,
                     _ => Outcome::Continue,
@@ -895,6 +970,26 @@ impl Overlay {
                     frame_ref,
                     pending,
                     font,
+                );
+            }
+
+            // Dragged annotation preview (Move tool drag in progress). The
+            // annotation was removed from history at press time; we paint a
+            // translated copy at the current cursor delta.
+            if let Some(drag) = self.annotation_drag.as_ref() {
+                let cursor_frame = {
+                    let size = self.window.inner_size();
+                    let (ww, wh) = (size.width.max(1) as i64, size.height.max(1) as i64);
+                    let (fw, fh) = frame_ref.dimensions();
+                    let x = (cursor.0 as i64 * fw as i64 / ww) as i32;
+                    let y = (cursor.1 as i64 * fh as i64 / wh) as i32;
+                    (x, y)
+                };
+                let dx = cursor_frame.0 - drag.press_frame.0;
+                let dy = cursor_frame.1 - drag.press_frame.1;
+                let translated = drag.original.translated(dx, dy);
+                annotate_render::draw_annotation_on_buf(
+                    &mut buf, w, h, frame_ref, &translated, font,
                 );
             }
 
