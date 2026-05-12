@@ -5,35 +5,91 @@ use crate::overlay::state::{Anchor, Rect};
 /// Copy the captured frame into the softbuffer surface, nearest-neighbor
 /// scaled to the window's pixel dimensions. Softbuffer's pixel format is
 /// 0x00RRGGBB (u32 per pixel).
+///
+/// Hot path: called every redraw. On 4K Retina (~8M pixels) the inner loop
+/// dominates the drag-redraw budget, so we lean on slice iteration to let
+/// LLVM auto-vectorize the channel swizzle.
 pub fn draw_background(buf: &mut [u32], w: u32, h: u32, frame: &RgbaImage) {
     let (fw, fh) = frame.dimensions();
-    for y in 0..h {
-        for x in 0..w {
-            let fx = (x as u64 * fw as u64 / w as u64) as u32;
-            let fy = (y as u64 * fh as u64 / h as u64) as u32;
-            let p = frame.get_pixel(fx.min(fw - 1), fy.min(fh - 1));
-            let [r, g, b, _a] = p.0;
-            buf[(y * w + x) as usize] =
-                ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+    let raw = frame.as_raw();
+
+    if fw == w && fh == h {
+        // Fast path: 1:1 pixel mapping (the common case — the window is
+        // sized to match the captured frame). `iter_mut().zip(chunks_exact(4))`
+        // gives the optimizer a predictable, bounds-check-free stride.
+        for (dst, src) in buf.iter_mut().zip(raw.chunks_exact(4)) {
+            *dst = ((src[0] as u32) << 16)
+                 | ((src[1] as u32) << 8)
+                 | (src[2] as u32);
+        }
+    } else {
+        // Scaling path (rare): hoist the row index out of the inner loop
+        // and avoid `get_pixel` overhead by indexing the raw buffer.
+        let fw_u64 = fw as u64;
+        let fh_u64 = fh as u64;
+        let w_u64 = w as u64;
+        let h_u64 = h as u64;
+        for y in 0..h {
+            let src_y = ((y as u64 * fh_u64 / h_u64) as u32).min(fh - 1);
+            let src_row_start = (src_y as usize) * (fw as usize) * 4;
+            let dst_row_start = (y as usize) * (w as usize);
+            for x in 0..w {
+                let src_x = ((x as u64 * fw_u64 / w_u64) as u32).min(fw - 1) as usize;
+                let i = src_row_start + src_x * 4;
+                let r = raw[i] as u32;
+                let g = raw[i + 1] as u32;
+                let b = raw[i + 2] as u32;
+                buf[dst_row_start + x as usize] = (r << 16) | (g << 8) | b;
+            }
         }
     }
 }
 
 /// Darken everything in `buf` except the optional `inside` rect (x, y, w, h).
+///
+/// Hot path: called every redraw. Operate on row slices instead of 2D index
+/// pairs so the inner loop is a tight `&mut [u32]` walk LLVM can vectorize.
+/// Behavior preserved exactly: each non-selection pixel's R/G/B channels are
+/// halved (matches the previous `/ 2` arithmetic — bit-for-bit identical).
 pub fn apply_dim(buf: &mut [u32], w: u32, h: u32, inside: Option<(u32, u32, u32, u32)>) {
-    for y in 0..h {
-        for x in 0..w {
-            let in_selection = match inside {
-                Some((ix, iy, iw, ih)) => x >= ix && y >= iy && x < ix + iw && y < iy + ih,
-                None => false,
-            };
-            if !in_selection {
-                let i = (y * w + x) as usize;
-                let px = buf[i];
-                let r = ((px >> 16) & 0xFF) / 2;
-                let g = ((px >> 8) & 0xFF) / 2;
-                let b = (px & 0xFF) / 2;
-                buf[i] = (r << 16) | (g << 8) | b;
+    #[inline(always)]
+    fn dim_slice(row: &mut [u32]) {
+        for px in row.iter_mut() {
+            let r = ((*px >> 16) & 0xFF) / 2;
+            let g = ((*px >> 8) & 0xFF) / 2;
+            let b = (*px & 0xFF) / 2;
+            *px = (r << 16) | (g << 8) | b;
+        }
+    }
+
+    let w_us = w as usize;
+
+    match inside {
+        None => {
+            // No selection: dim the whole buffer in one straight walk.
+            dim_slice(buf);
+        }
+        Some((ix, iy, iw, ih)) => {
+            let iy2 = iy.saturating_add(ih);
+            let ix2 = ix.saturating_add(iw).min(w);
+            let ix_clamped = ix.min(w);
+
+            for y in 0..h {
+                let row_start = (y as usize) * w_us;
+                let row_end = row_start + w_us;
+                let row = &mut buf[row_start..row_end];
+
+                if y >= iy && y < iy2 && iw > 0 && ih > 0 {
+                    // Row crosses the inside rect: dim the strips on either side,
+                    // leave the inside untouched.
+                    let left = ix_clamped as usize;
+                    let right = ix2 as usize;
+                    dim_slice(&mut row[..left]);
+                    dim_slice(&mut row[right..]);
+                } else {
+                    // Entire row is outside the selection.
+                    dim_slice(row);
+                }
             }
         }
     }
