@@ -91,6 +91,7 @@ pub struct Overlay {
     last_click: Option<std::time::Instant>,
     last_redraw: Option<std::time::Instant>,
     font: crate::text::Font,
+    icon_font: crate::icon_font::IconFont,
     scale_factor: f32,
     // Iter 5a: annotation state
     pub(crate) tool: annotate::Tool,
@@ -198,6 +199,7 @@ impl Overlay {
             last_click: None,
             last_redraw: None,
             font: crate::text::Font::embedded(),
+            icon_font: crate::icon_font::IconFont::embedded(),
             scale_factor,
             tool: annotate::Tool::Move,
             history: annotate::History::new(),
@@ -814,6 +816,7 @@ impl Overlay {
         let cursor = self.cursor;
         let frame_ref = &self.frame;
         let font = &mut self.font;
+        let icon_font = &mut self.icon_font;
         let scale = self.scale_factor;
 
         let mut buf = self
@@ -920,6 +923,7 @@ impl Overlay {
                     self.history.can_undo(),
                     self.history.can_redo(),
                     self.show_hints,
+                    icon_font,
                 );
             }
         }

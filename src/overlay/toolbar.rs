@@ -18,8 +18,21 @@ pub const SWATCH_PAD: i32 = 6 * UI_SCALE;
 pub const STROKE_DOT_AREA: i32 = 18 * UI_SCALE;
 const PILL_RADIUS: i32 = 4 * UI_SCALE;
 
-/// Stroke thickness (pixels) used by all icons. Scales with UI.
-const STROKE: i32 = 4;
+// Lucide icon codepoints. Sourced from lucide-static's `font/info.json`
+// (npm package, identical to the official lucide.dev set). Each constant
+// is the Private Use Area codepoint that maps to the named SVG icon in
+// the bundled `assets/fonts/lucide.ttf`.
+const ICON_MOVE: char       = '\u{e121}'; // move
+const ICON_ARROW: char      = '\u{e04d}'; // arrow-up-right
+const ICON_SQUARE: char     = '\u{e167}'; // square
+const ICON_CIRCLE: char     = '\u{e076}'; // circle
+const ICON_PENCIL: char     = '\u{e1f9}'; // pencil
+const ICON_TYPE: char       = '\u{e198}'; // type
+const ICON_GRID_2X2: char   = '\u{e4ff}'; // grid-2x2
+const ICON_UNDO: char       = '\u{e2a1}'; // undo-2
+const ICON_REDO: char       = '\u{e2a0}'; // redo-2
+const ICON_PIN: char        = '\u{e259}'; // pin
+const ICON_SAVE: char       = '\u{e14d}'; // save
 
 /// Brand/theme color used for confirmed-state UI (selection outline,
 /// future hover or accent elements). softbuffer 0x00RRGGBB.
@@ -262,6 +275,7 @@ pub fn draw_toolbar(
     can_undo: bool,
     can_redo: bool,
     show_hints: bool,
+    icon_font: &mut crate::icon_font::IconFont,
 ) {
     draw_pill(buf, win_w, win_h, toolbar.origin, toolbar.size, PILL_RADIUS, 0x000000, 0.7);
 
@@ -270,16 +284,27 @@ pub fn draw_toolbar(
         if btn.tool == current_tool {
             draw_pill(buf, win_w, win_h, btn.origin, btn.size, PILL_RADIUS, 0xFFFFFF, 0.25);
         }
-        draw_tool_icon(buf, win_w, win_h, btn.tool, btn.origin, 0xFFFFFF);
+        icon_font.render_centered(
+            buf, win_w, win_h, btn.origin, ICON_SIZE,
+            tool_icon_codepoint(btn.tool), 0xFFFFFF,
+        );
     }
     let undo_color = if can_undo { 0xFFFFFF } else { 0x888888 };
-    draw_icon_undo(buf, win_w, win_h, toolbar.undo_button.origin, undo_color);
+    icon_font.render_centered(
+        buf, win_w, win_h, toolbar.undo_button.origin, ICON_SIZE, ICON_UNDO, undo_color,
+    );
     let redo_color = if can_redo { 0xFFFFFF } else { 0x888888 };
-    draw_icon_redo(buf, win_w, win_h, toolbar.redo_button.origin, redo_color);
+    icon_font.render_centered(
+        buf, win_w, win_h, toolbar.redo_button.origin, ICON_SIZE, ICON_REDO, redo_color,
+    );
     // Pin icon is always white (no enabled/disabled state).
-    draw_icon_pin_thumbtack(buf, win_w, win_h, toolbar.pin_button.origin, 0xFFFFFF);
+    icon_font.render_centered(
+        buf, win_w, win_h, toolbar.pin_button.origin, ICON_SIZE, ICON_PIN, 0xFFFFFF,
+    );
     // Save icon is always white (no enabled/disabled state).
-    draw_icon_save_disk(buf, win_w, win_h, toolbar.save_button.origin, 0xFFFFFF);
+    icon_font.render_centered(
+        buf, win_w, win_h, toolbar.save_button.origin, ICON_SIZE, ICON_SAVE, 0xFFFFFF,
+    );
 
     // Row 2 — color is faded/disabled under Mosaic (no color concept for
     // mosaic). Stroke stays full opacity + interactive under Mosaic so the
@@ -461,199 +486,23 @@ fn draw_hint_glyph(
     }
 }
 
-fn draw_tool_icon(buf: &mut [u32], w: u32, h: u32, tool: Tool, origin: (i32, i32), color: u32) {
+/// Map a `Tool` to the Lucide glyph codepoint that represents it.
+fn tool_icon_codepoint(tool: Tool) -> char {
     match tool {
-        Tool::Move => draw_icon_move(buf, w, h, origin, color),
-        Tool::Arrow => draw_icon_arrow(buf, w, h, origin, color),
-        Tool::Rect => draw_icon_rect(buf, w, h, origin, color),
-        Tool::Ellipse => draw_icon_ellipse(buf, w, h, origin, color),
-        Tool::Mosaic => draw_icon_mosaic(buf, w, h, origin, color),
-        Tool::Pen => draw_icon_pen(buf, w, h, origin, color),
-        Tool::Text => draw_icon_text(buf, w, h, origin, color),
+        Tool::Move    => ICON_MOVE,
+        Tool::Arrow   => ICON_ARROW,
+        Tool::Rect    => ICON_SQUARE,
+        Tool::Ellipse => ICON_CIRCLE,
+        Tool::Pen     => ICON_PENCIL,
+        Tool::Text    => ICON_TYPE,
+        Tool::Mosaic  => ICON_GRID_2X2,
     }
-}
-
-fn draw_icon_pen(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    // Vertical pencil: eraser cap on top, ferrule gap, fat body, triangular
-    // nib at the bottom. Solid fills (not thin strokes) so it doesn't read as
-    // another arrow / line.
-    let cx = o.0 + ICON_SIZE / 2;
-    let pad = ICON_SIZE / 6;             // top/bottom inset
-    let body_w = 6 * UI_SCALE;           // ~18 px on UI_SCALE=3
-    let eraser_h = 5 * UI_SCALE;         // ~15 px
-    let gap_h = UI_SCALE;                // ~3 px ferrule gap between eraser and body
-    let nib_h = 4 * UI_SCALE;            // ~12 px triangular tip
-    let body_h =
-        ICON_SIZE - 2 * pad - eraser_h - gap_h - nib_h;
-
-    let body_x = cx - body_w / 2;
-    let y_top = o.1 + pad;
-
-    // Eraser cap
-    fill_rect(buf, w, h, body_x, y_top, body_w, eraser_h, color);
-    // Body (skip gap_h to create the visual ferrule break)
-    let body_y = y_top + eraser_h + gap_h;
-    fill_rect(buf, w, h, body_x, body_y, body_w, body_h, color);
-    // Nib triangle pointing down
-    let nib_y_top = body_y + body_h;
-    fill_triangle(
-        buf, w, h,
-        (body_x as f64, nib_y_top as f64),
-        ((body_x + body_w) as f64, nib_y_top as f64),
-        (cx as f64, (nib_y_top + nib_h) as f64),
-        color,
-    );
-}
-
-fn draw_icon_text(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    // Capital "T" — horizontal bar on top + vertical bar centered.
-    let pad = ICON_SIZE / 5;
-    let bar_w = ICON_SIZE - 2 * pad;
-    fill_rect(buf, w, h, o.0 + pad, o.1 + pad, bar_w, STROKE, color);
-    let cx = o.0 + ICON_SIZE / 2;
-    fill_rect(buf, w, h, cx - STROKE / 2, o.1 + pad, STROKE, ICON_SIZE - 2 * pad, color);
-}
-
-// All icon drawing is done natively at ICON_SIZE (=66) using filled primitives
-// (fill_disk, fill_rect, stroke_rect, stroke_arc) for smooth thick strokes.
-
-fn draw_icon_move(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    // Plus sign: horizontal arm 40×STROKE, vertical arm STROKE×40, centered.
-    let cx = o.0 + ICON_SIZE / 2;
-    let cy = o.1 + ICON_SIZE / 2;
-    let arm = 20; // half-length
-    fill_rect(buf, w, h, cx - arm, cy - STROKE / 2, arm * 2, STROKE, color);
-    fill_rect(buf, w, h, cx - STROKE / 2, cy - arm, STROKE, arm * 2, color);
-}
-
-fn draw_icon_arrow(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    // Diagonal line from bottom-left to top-right with a 60° pointy arrowhead.
-    let pad = ICON_SIZE / 5; // ~13
-    let (x0, y0) = (o.0 + pad, o.1 + ICON_SIZE - pad);
-    let (x1, y1) = (o.0 + ICON_SIZE - pad, o.1 + pad);
-    let head_len = 18.0;
-    let dx = (x1 - x0) as f64;
-    let dy = (y1 - y0) as f64;
-    let len = (dx * dx + dy * dy).sqrt().max(1.0);
-    let ux = dx / len;
-    let uy = dy / len;
-    let base_x = x1 as f64 - ux * head_len;
-    let base_y = y1 as f64 - uy * head_len;
-    // Shaft stops at the arrowhead's base so it doesn't poke past the tip.
-    stroke_line(buf, w, h, x0, y0, base_x as i32, base_y as i32, STROKE, color);
-    // 60° arrowhead: half-angle 30° → half_w = head_len * tan(30°) ≈ 0.577.
-    let px = -uy;
-    let py = ux;
-    let half_w = head_len * 0.577;
-    let a = (base_x + px * half_w, base_y + py * half_w);
-    let b = (base_x - px * half_w, base_y - py * half_w);
-    fill_triangle(buf, w, h, (x1 as f64, y1 as f64), a, b, color);
-}
-
-fn draw_icon_rect(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    // Centered inset rectangle outline.
-    let pad = ICON_SIZE / 6; // ~11
-    stroke_rect(
-        buf,
-        w,
-        h,
-        o.0 + pad,
-        o.1 + pad,
-        ICON_SIZE - 2 * pad,
-        ICON_SIZE - 2 * pad,
-        STROKE,
-        color,
-    );
-}
-
-fn draw_icon_ellipse(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    let cx = o.0 + ICON_SIZE / 2;
-    let cy = o.1 + ICON_SIZE / 2;
-    let pad = ICON_SIZE / 6;
-    let rx = ((ICON_SIZE - 2 * pad) / 2) as f64;
-    let ry = rx * 0.85; // slight oval
-    stroke_ellipse(buf, w, h, cx, cy, rx, ry, STROKE, color);
-}
-
-fn draw_icon_mosaic(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    // 3×3 checker. Cell size computed so the whole grid fills the icon minus pad.
-    let pad = ICON_SIZE / 6;
-    let grid_side = ICON_SIZE - 2 * pad;
-    let cell = grid_side / 3;
-    for row in 0..3 {
-        for col in 0..3 {
-            if (row + col) % 2 == 0 {
-                let x = o.0 + pad + col * cell;
-                let y = o.1 + pad + row * cell;
-                fill_rect(buf, w, h, x, y, cell, cell, color);
-            }
-        }
-    }
-}
-
-fn draw_icon_undo(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    // "<" chevron: two straight strokes meeting at the left-middle point.
-    let cx = o.0 + ICON_SIZE / 2;
-    let cy = o.1 + ICON_SIZE / 2;
-    let arm_x = ICON_SIZE / 4;
-    let arm_y = ICON_SIZE / 3;
-    let tip = (cx - arm_x, cy);
-    let top = (cx + arm_x, cy - arm_y);
-    let bot = (cx + arm_x, cy + arm_y);
-    stroke_line(buf, w, h, top.0, top.1, tip.0, tip.1, STROKE, color);
-    stroke_line(buf, w, h, tip.0, tip.1, bot.0, bot.1, STROKE, color);
-}
-
-fn draw_icon_redo(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    // ">" chevron: two straight strokes meeting at the right-middle point.
-    let cx = o.0 + ICON_SIZE / 2;
-    let cy = o.1 + ICON_SIZE / 2;
-    let arm_x = ICON_SIZE / 4;
-    let arm_y = ICON_SIZE / 3;
-    let tip = (cx + arm_x, cy);
-    let top = (cx - arm_x, cy - arm_y);
-    let bot = (cx - arm_x, cy + arm_y);
-    stroke_line(buf, w, h, top.0, top.1, tip.0, tip.1, STROKE, color);
-    stroke_line(buf, w, h, tip.0, tip.1, bot.0, bot.1, STROKE, color);
-}
-
-fn draw_icon_save_disk(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    // Floppy / save icon: outer rounded rect outline + a smaller filled
-    // rect at the top representing the metal slider. Reads as "save".
-    let pad = ICON_SIZE / 6;
-    let outer_x = o.0 + pad;
-    let outer_y = o.1 + pad;
-    let outer_w = ICON_SIZE - 2 * pad;
-    let outer_h = ICON_SIZE - 2 * pad;
-    // Outer box outline.
-    stroke_rect(buf, w, h, outer_x, outer_y, outer_w, outer_h, STROKE, color);
-    // Top slider: filled rectangle covering the top ~1/3 of the inside.
-    let slider_h = outer_h / 3;
-    let slider_w = outer_w - 4 * UI_SCALE;
-    let slider_x = outer_x + 2 * UI_SCALE;
-    let slider_y = outer_y;
-    fill_rect(buf, w, h, slider_x, slider_y, slider_w, slider_h, color);
-}
-
-fn draw_icon_pin_thumbtack(buf: &mut [u32], w: u32, h: u32, o: (i32, i32), color: u32) {
-    // Thumbtack: a horizontal head bar at top-center, a vertical needle below.
-    let pad = ICON_SIZE / 5;
-    let cx = o.0 + ICON_SIZE / 2;
-    // Head: a wide bar near the top.
-    let head_w = ICON_SIZE - 2 * pad - 4 * UI_SCALE;
-    let head_h = 4 * UI_SCALE;
-    let head_x = cx - head_w / 2;
-    let head_y = o.1 + pad;
-    fill_rect(buf, w, h, head_x, head_y, head_w, head_h, color);
-    // Stem (needle): vertical line below the head down to near the bottom.
-    let stem_h = ICON_SIZE - pad - (head_y - o.1) - head_h;
-    fill_rect(buf, w, h, cx - STROKE / 2, head_y + head_h, STROKE, stem_h, color);
-    // Tip: a small fat dot at the bottom of the stem to suggest a piercing point.
-    let tip_y = head_y + head_h + stem_h - 2 * UI_SCALE;
-    fill_rect(buf, w, h, cx - STROKE, tip_y, STROKE * 2, 2 * UI_SCALE, color);
 }
 
 // --- primitive drawing helpers (all operate on softbuffer ARGB u32) ---
+// Used by the toolbar pill background, the row-2 color/stroke swatches, and
+// the hint-badge glyphs. Tool icons themselves are rendered via `IconFont`
+// (see `src/icon_font.rs`).
 
 fn put(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, color: u32) {
     if x >= 0 && y >= 0 && x < w as i32 && y < h as i32 {
@@ -690,26 +539,6 @@ fn fill_rect(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, rw: i32, rh: i32, 
             put(buf, w, h, x + dx, y + dy, color);
         }
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn stroke_rect(
-    buf: &mut [u32],
-    w: u32,
-    h: u32,
-    x: i32,
-    y: i32,
-    rw: i32,
-    rh: i32,
-    thickness: i32,
-    color: u32,
-) {
-    // top, bottom
-    fill_rect(buf, w, h, x, y, rw, thickness, color);
-    fill_rect(buf, w, h, x, y + rh - thickness, rw, thickness, color);
-    // left, right
-    fill_rect(buf, w, h, x, y, thickness, rh, color);
-    fill_rect(buf, w, h, x + rw - thickness, y, thickness, rh, color);
 }
 
 fn fill_disk(buf: &mut [u32], w: u32, h: u32, cx: f64, cy: f64, r: f64, color: u32) {
@@ -842,56 +671,6 @@ fn stroke_ellipse(
             }
         }
     }
-}
-
-fn fill_triangle(
-    buf: &mut [u32],
-    w: u32,
-    h: u32,
-    p0: (f64, f64),
-    p1: (f64, f64),
-    p2: (f64, f64),
-    color: u32,
-) {
-    let min_x = p0.0.min(p1.0).min(p2.0).floor() as i32;
-    let max_x = p0.0.max(p1.0).max(p2.0).ceil() as i32;
-    let min_y = p0.1.min(p1.1).min(p2.1).floor() as i32;
-    let max_y = p0.1.max(p1.1).max(p2.1).ceil() as i32;
-    // 4×4 supersample grid per pixel.
-    const N: i32 = 4;
-    let step = 1.0 / N as f64;
-    let offset = step / 2.0;
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let mut hits = 0i32;
-            for sy in 0..N {
-                for sx in 0..N {
-                    let px = x as f64 + offset + sx as f64 * step;
-                    let py = y as f64 + offset + sy as f64 * step;
-                    if point_in_triangle((px, py), p0, p1, p2) {
-                        hits += 1;
-                    }
-                }
-            }
-            if hits > 0 {
-                let coverage = hits as f32 / (N * N) as f32;
-                put_blend(buf, w, h, x, y, color, coverage);
-            }
-        }
-    }
-}
-
-fn point_in_triangle(p: (f64, f64), a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> bool {
-    let d1 = sign_tri(p, a, b);
-    let d2 = sign_tri(p, b, c);
-    let d3 = sign_tri(p, c, a);
-    let neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
-    let pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
-    !(neg && pos)
-}
-
-fn sign_tri(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
-    (p.0 - b.0) * (a.1 - b.1) - (a.0 - b.0) * (p.1 - b.1)
 }
 
 #[allow(clippy::too_many_arguments)]
