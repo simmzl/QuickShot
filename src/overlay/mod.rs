@@ -171,8 +171,18 @@ impl Overlay {
                 .with_decorations(false)
                 .with_resizable(false)
                 .with_inner_size(size)
-                .with_position(position);
+                .with_position(position)
+                // Create hidden so we don't flash a level-0 window between
+                // create_window and the subsequent setLevel:1500 + animation
+                // configuration. makeKeyAndOrderFront: below orders it front.
+                .with_visible(false);
             let win = event_loop.create_window(attrs).context("create window")?;
+            // Animation behavior must be applied FIRST so subsequent
+            // setLevel: / setCollectionBehavior: / makeKeyAndOrderFront: don't
+            // trigger macOS's default appear/zoom animation.
+            // NSWindowAnimationBehaviorNone suppresses the appear/order-front
+            // animation so the overlay doesn't fade-in or zoom on every capture.
+            set_macos_window_animation_none(&win);
             // macOS 26 (Tahoe) tightened how it places accessory-app borderless
             // windows: without an explicit collectionBehavior, an overlay with
             // setLevel:1000 can land at the desktop layer instead of covering
@@ -183,15 +193,13 @@ impl Overlay {
             // assistive overlays, sits above kCGScreenSaverWindowLevel (1000) and is
             // robust against macOS 26's new accessory-app demotion behavior.
             set_macos_window_level(&win, 1500);
-            // Suppress the default NSWindow appear/order-front animation so the
-            // overlay doesn't fade-in or zoom on every capture.
-            set_macos_window_animation_none(&win);
             // canBecomeKeyWindow must return YES for ESC/Enter to be delivered
             // before any mouse click. Apply once per process; harmless to call
             // again on subsequent overlay opens.
             ensure_nswindow_can_become_key();
-            // Without this, ESC/Enter before the first mouse click are dropped
-            // because the borderless high-level window isn't automatically key.
+            // makeKeyAndOrderFront: both orders the window front (making it
+            // visible after with_visible(false)) and makes it key so ESC/Enter
+            // are delivered before any mouse click.
             make_macos_key_window(&win);
             // Read back the level so a future regression is visible in stderr
             // without having to attach a debugger.
