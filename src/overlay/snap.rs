@@ -81,11 +81,25 @@ pub fn enumerate_windows(
         }
 
         let Some(layer) = read_i64(dict, "kCGWindowLayer") else { continue };
-        // Accept normal app windows (0), floating panels like iTerm's hotkey
-        // window or "always on top" tools (3), and modal panels (8). Drop
-        // everything else: dock (20), menu bar (25), popup menus (101+),
-        // wallpaper (negative), our own overlay (1500), etc.
-        if !matches!(layer, 0 | 3 | 8) {
+
+        // Read owner + window names for diagnostics (best-effort — may be
+        // absent for some apps). Used in eprintlns so the user can read
+        // /tmp/quickshot.log and see what layer each window is on.
+        let owner_name = read_string(dict, "kCGWindowOwnerName").unwrap_or_default();
+        let window_name = read_string(dict, "kCGWindowName").unwrap_or_default();
+
+        // Layer filter: accept any user-facing window (0..20). This catches
+        // normal app windows (0), floating panels like iTerm's hotkey window
+        // (3), torn-off menus (4), modal panels (8), utility windows (19),
+        // and any custom levels apps use for "always on top" panels. Excludes
+        // dock (20), menu bar (24+), popup menus (100+), our overlay (1500),
+        // and wallpaper (negative).
+        let layer_ok = layer >= 0 && layer < 20;
+        if !layer_ok {
+            eprintln!(
+                "snap-debug: SKIP layer={} pid={} owner={:?} name={:?} (layer out of range)",
+                layer, pid, owner_name, window_name,
+            );
             continue;
         }
         let layer = layer as i32;
@@ -97,6 +111,10 @@ pub fn enumerate_windows(
         let Some(cg_h) = read_f64(&bounds_dict, "Height") else { continue };
 
         if cg_w < MIN_WINDOW_DIMENSION_PX || cg_h < MIN_WINDOW_DIMENSION_PX {
+            eprintln!(
+                "snap-debug: SKIP small layer={} pid={} owner={:?} name={:?} size={}x{}",
+                layer, pid, owner_name, window_name, cg_w as i32, cg_h as i32,
+            );
             continue;
         }
 
@@ -110,6 +128,13 @@ pub fn enumerate_windows(
         let phys_w = (cg_w * scale_factor as f64).round() as i32;
         let phys_h = (cg_h * scale_factor as f64).round() as i32;
 
+        eprintln!(
+            "snap-debug: KEEP layer={} pid={} owner={:?} name={:?} cg=({},{},{}x{}) win=({},{},{}x{})",
+            layer, pid, owner_name, window_name,
+            cg_x as i32, cg_y as i32, cg_w as i32, cg_h as i32,
+            local_x, local_y, phys_w, phys_h,
+        );
+
         out.push(WindowEntry {
             bounds: Rect {
                 x: local_x,
@@ -119,12 +144,6 @@ pub fn enumerate_windows(
             },
             layer,
         });
-
-        eprintln!(
-            "quickshot: snap window: cg=({}, {}, {}x{}) → win=({}, {}, {}x{}) layer={}",
-            cg_x as i32, cg_y as i32, cg_w as i32, cg_h as i32,
-            local_x, local_y, phys_w, phys_h, layer,
-        );
     }
 
     out
@@ -169,6 +188,15 @@ fn read_dict(
     key: &str,
 ) -> Option<core_foundation::dictionary::CFDictionary> {
     read_value(dict, key)
+}
+
+#[cfg(target_os = "macos")]
+fn read_string(
+    dict: &core_foundation::dictionary::CFDictionary,
+    key: &str,
+) -> Option<String> {
+    let s: core_foundation::string::CFString = read_value(dict, key)?;
+    Some(s.to_string())
 }
 
 #[cfg(not(target_os = "macos"))]
