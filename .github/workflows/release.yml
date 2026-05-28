@@ -9,7 +9,8 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  # ---------------- macOS: universal .app + .dmg ----------------
+  build-macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,29 +45,102 @@ jobs:
           file dist/quickshot.app/Contents/MacOS/quickshot
           codesign --verify --verbose=2 dist/quickshot.app
 
-      - name: Create GitHub Release + upload DMG
+      - name: Upload .dmg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/quickshot-*.dmg
+          if-no-files-found: error
+
+  # ---------------- Windows: MSVC .exe + .zip ----------------
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run test suite
+        run: cargo test
+
+      - name: Package .zip
+        shell: pwsh
+        run: ./scripts/package.ps1
+
+      - name: Inspect artifacts
+        shell: pwsh
+        run: Get-ChildItem dist -Recurse | Select-Object Length, FullName | Format-Table -AutoSize
+
+      - name: Upload .zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: dist/quickshot-*-windows-x64.zip
+          if-no-files-found: error
+
+  # ---------------- Publish a single GitHub Release ----------------
+  release:
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List collected assets
+        run: ls -lh dist/
+
+      - name: Create GitHub Release + upload assets
         uses: softprops/action-gh-release@v2
         with:
           name: quickshot ${{ github.ref_name }}
           body: |
             ## Install (macOS)
 
-            1. Download `quickshot-*.dmg` below.
+            1. Download `quickshot-<VERSION>.dmg` below.
             2. Open it and drag `quickshot.app` to `Applications`.
             3. **First launch:** right-click the app → **Open** → **Open** in the Gatekeeper dialog. This is required once for any app without an Apple Developer ID signature.
             4. Grant **Screen Recording** permission on the first capture (System Settings → Privacy & Security → Screen Recording → enable quickshot → relaunch).
 
+            Universal binary (x86_64 + Apple Silicon), ad-hoc signed.
+
+            ## Install (Windows)
+
+            1. Download `quickshot-<VERSION>-windows-x64.zip` below.
+            2. Extract anywhere and double-click `quickshot.exe`. The app lives in the system tray.
+            3. SmartScreen may warn on first launch — click **More info → Run anyway**.
+
+            x86_64 MSVC release, no console window.
+
             ## Use
 
-            - `Cmd+Shift+A` — region capture with drag → anchor adjust → Enter/double-click confirm.
-            - `Cmd+Shift+S` — full-screen capture.
-            - In Adjusting state: `A`/`R`/`E`/`B` = Arrow/Rect/Ellipse/Mosaic, `M` = Move, `Cmd+Z`/`Cmd+Shift+Z` = undo/redo.
-            - Tray menu: Edit Config, Start at Login, Quit.
+            - Region capture: `Cmd+Shift+A` (macOS) / `Ctrl+Shift+A` (Windows). Drag → anchor adjust → Enter or double-click to confirm.
+            - Full-screen capture: `Cmd+Shift+S` (macOS) / `Ctrl+Shift+S` (Windows).
+            - Annotation tools while adjusting a region: `A` / `R` / `E` / `B` = Arrow / Rect / Ellipse / Mosaic, `M` = Move; `Cmd+Z` / `Ctrl+Z` undo, `Cmd+Shift+Z` / `Ctrl+Shift+Z` redo.
+            - Tray menu: Capture Region/Screen, Edit Config, Start at Login, Quit.
 
-            Config: `~/.config/quickshot/config.toml`.
-
-            Universal binary (x86_64 + Apple Silicon), ad-hoc signed.
+            Config path: `~/.config/quickshot/config.toml` (macOS) or `%APPDATA%\quickshot\config.toml` (Windows). Edits are auto-reloaded within one second — no restart needed.
           files: |
             dist/quickshot-*.dmg
+            dist/quickshot-*-windows-x64.zip
           draft: false
           prerelease: false
+          fail_on_unmatched_files: true

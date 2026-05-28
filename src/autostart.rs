@@ -1,12 +1,17 @@
-//! macOS LaunchAgent install/uninstall for quickshot autostart.
+//! Per-user autostart install/uninstall for quickshot.
 //!
-//! On non-macOS platforms the functions return an error — the plan
-//! explicitly targets macOS for Iter 3.
+//! - macOS: writes a `~/Library/LaunchAgents/com.quickshot.daemon.plist`.
+//! - Windows: writes a string value under
+//!   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` via `reg.exe`.
+//! - Other Unixes: not supported; functions return an error.
 
-use anyhow::{bail, Context, Result};
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use anyhow::Context;
+use anyhow::{bail, Result};
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
 
+#[allow(dead_code)]
 const LABEL: &str = "com.quickshot.daemon";
 
 #[cfg(target_os = "macos")]
@@ -62,19 +67,103 @@ pub fn is_installed() -> bool {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+// --- Windows -------------------------------------------------------------
+
+#[cfg(target_os = "windows")]
+const WIN_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+#[cfg(target_os = "windows")]
+const WIN_VALUE_NAME: &str = "quickshot";
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(target_os = "windows")]
+fn reg_cmd() -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let mut c = std::process::Command::new("reg.exe");
+    // Suppress the brief console flash that would otherwise pop up when our
+    // GUI-subsystem process spawns a console child.
+    c.creation_flags(CREATE_NO_WINDOW);
+    c
+}
+
+#[cfg(target_os = "windows")]
+pub fn install() -> Result<()> {
+    let bin = std::env::current_exe().context("resolve current executable path")?;
+    let bin_str = bin.to_string_lossy().into_owned();
+    // Quote the path so spaces in the install location survive the
+    // CreateProcess invocation that Windows uses when reading Run values.
+    let value = format!("\"{bin_str}\"");
+    let output = reg_cmd()
+        .args([
+            "add",
+            WIN_RUN_KEY,
+            "/v",
+            WIN_VALUE_NAME,
+            "/t",
+            "REG_SZ",
+            "/d",
+            &value,
+            "/f",
+        ])
+        .output()
+        .context("invoke reg.exe add")?;
+    if !output.status.success() {
+        bail!(
+            "reg add failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    println!("installed autostart → {WIN_RUN_KEY}\\{WIN_VALUE_NAME} = {value}");
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn uninstall() -> Result<()> {
+    let output = reg_cmd()
+        .args(["delete", WIN_RUN_KEY, "/v", WIN_VALUE_NAME, "/f"])
+        .output()
+        .context("invoke reg.exe delete")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // reg.exe exits non-zero if the value doesn't exist; treat as success.
+        if stderr.to_ascii_lowercase().contains("unable to find")
+            || stderr.contains("ERROR: The system was unable")
+        {
+            println!("removed autostart (nothing to remove)");
+            return Ok(());
+        }
+        bail!("reg delete failed: {}", stderr.trim());
+    }
+    println!("removed autostart");
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn is_installed() -> bool {
+    let output = reg_cmd()
+        .args(["query", WIN_RUN_KEY, "/v", WIN_VALUE_NAME])
+        .output();
+    match output {
+        Ok(o) => o.status.success(),
+        Err(_) => false,
+    }
+}
+
+// --- Unsupported platforms ----------------------------------------------
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn is_installed() -> bool {
     false
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn install() -> Result<()> {
-    bail!("autostart is only supported on macOS");
+    bail!("autostart is not supported on this platform");
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn uninstall() -> Result<()> {
-    bail!("autostart is only supported on macOS");
+    bail!("autostart is not supported on this platform");
 }
 
 #[cfg(target_os = "macos")]

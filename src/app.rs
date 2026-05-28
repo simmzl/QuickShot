@@ -8,6 +8,7 @@ use winit::window::WindowId;
 
 use crate::capture;
 use crate::clipboard;
+use crate::hotkey::HotkeyGuard;
 use crate::overlay::{state::Rect, Outcome, Overlay};
 use crate::tray::TrayGuard;
 
@@ -21,6 +22,9 @@ pub enum UserEvent {
     EditConfig,
     /// "Start at Login" check item clicked — toggles autostart install/uninstall.
     ToggleAutostart,
+    /// `config.toml` changed on disk (detected by the watcher thread).
+    /// Triggers re-read of the config and re-registration of hotkeys.
+    ReloadConfig,
     /// "Quit" menu item clicked.
     Quit,
 }
@@ -34,12 +38,14 @@ pub struct App {
     region_label: String,
     fullscreen_label: String,
     tray: Option<TrayGuard>,
+    hotkey_guard: Option<HotkeyGuard>,
 }
 
 impl App {
     pub fn new(
         config: crate::config::Config,
         proxy: EventLoopProxy<UserEvent>,
+        hotkey_guard: HotkeyGuard,
     ) -> Self {
         let region_label = config.hotkey.region.raw.clone();
         let fullscreen_label = config.hotkey.fullscreen.raw.clone();
@@ -52,7 +58,54 @@ impl App {
             region_label,
             fullscreen_label,
             tray: None,
+            hotkey_guard: Some(hotkey_guard),
         }
+    }
+
+    /// Re-read `config.toml` and apply changes. Re-registers hotkeys if the
+    /// region/fullscreen combos changed, and updates the tray menu labels.
+    /// On hotkey-registration failure, the previous bindings are preserved.
+    fn reload_config(&mut self) {
+        let new_cfg = crate::config::Config::load();
+        let new_region_raw = new_cfg.hotkey.region.raw.clone();
+        let new_screen_raw = new_cfg.hotkey.fullscreen.raw.clone();
+        let hotkey_changed = new_region_raw != self.region_label
+            || new_screen_raw != self.fullscreen_label;
+
+        if hotkey_changed {
+            if let Some(guard) = self.hotkey_guard.as_mut() {
+                match guard.reregister(
+                    new_cfg.hotkey.region.clone(),
+                    new_cfg.hotkey.fullscreen.clone(),
+                ) {
+                    Ok(()) => {
+                        self.region_label = new_region_raw;
+                        self.fullscreen_label = new_screen_raw;
+                        if let Some(tray) = self.tray.as_ref() {
+                            tray.set_capture_labels(
+                                &self.region_label,
+                                &self.fullscreen_label,
+                            );
+                        }
+                        println!(
+                            "reloaded hotkeys: {} (region), {} (fullscreen)",
+                            self.region_label, self.fullscreen_label,
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("reload: hotkey re-register failed: {e:?}");
+                        // Keep the old config + labels — `guard` rolled back
+                        // to the previous binding internally.
+                        return;
+                    }
+                }
+            }
+        } else {
+            println!("reloaded config (hotkeys unchanged)");
+        }
+
+        // Always update save/general settings — they take effect on next capture.
+        self.config = new_cfg;
     }
 
     fn open_overlay(&mut self, event_loop: &ActiveEventLoop) -> Result<()> {
@@ -276,19 +329,20 @@ impl App {
             eprintln!("edit config: could not resolve config path");
             return;
         };
-        // Ensure the file exists so `open` has something to target — Config::load
-        // writes the default on first run, but if the user wiped ~/.config manually
-        // between launches we may hit a missing file.
+        // Ensure the file exists so the OS opener has something to target —
+        // Config::load writes the default on first run, but if the user wiped
+        // the config dir manually between launches we may hit a missing file.
         if !path.exists() {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
             let _ = std::fs::write(&path, crate::config::DEFAULT_TOML);
         }
-        if let Err(e) = std::process::Command::new("open").arg(&path).spawn() {
+        if let Err(e) = open_config_in_editor(&path) {
             eprintln!("edit config: could not open {:?}: {e}", path);
         }
     }
+
 
     fn toggle_autostart(&mut self) {
         // The CheckMenuItem auto-toggles its check state on click; read the
@@ -383,6 +437,9 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::ToggleAutostart => {
                 self.toggle_autostart();
             }
+            UserEvent::ReloadConfig => {
+                self.reload_config();
+            }
             UserEvent::Quit => {
                 event_loop.exit();
             }
@@ -423,4 +480,34 @@ fn set_macos_activation_policy(policy: i64) {
 #[cfg(target_os = "macos")]
 fn set_macos_activation_policy_accessory() {
     set_macos_activation_policy(1);
+}
+
+#[cfg(target_os = "macos")]
+fn open_config_in_editor(path: &std::path::Path) -> std::io::Result<()> {
+    std::process::Command::new("open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(target_os = "windows")]
+fn open_config_in_editor(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    // notepad.exe ships on every Windows install and is a GUI app, so it
+    // won't flash a console window. We intentionally don't use
+    // `cmd /C start` here because that briefly spawns a console.
+    std::process::Command::new("notepad.exe")
+        .creation_flags(DETACHED_PROCESS)
+        .arg(path)
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn open_config_in_editor(path: &std::path::Path) -> std::io::Result<()> {
+    std::process::Command::new("xdg-open")
+        .arg(path)
+        .spawn()
+        .map(|_| ())
 }

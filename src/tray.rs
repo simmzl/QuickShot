@@ -14,6 +14,19 @@ use crate::app::UserEvent;
 pub struct TrayGuard {
     _tray: TrayIcon,
     pub autostart_item: CheckMenuItem,
+    region_item: MenuItem,
+    screen_item: MenuItem,
+}
+
+impl TrayGuard {
+    /// Update the hotkey hint suffix on the two capture menu items. Called
+    /// after a config reload swaps the bound hotkeys to a different combo.
+    pub fn set_capture_labels(&self, region_label: &str, screen_label: &str) {
+        self.region_item
+            .set_text(format!("Capture Region    {region_label}"));
+        self.screen_item
+            .set_text(format!("Capture Screen    {screen_label}"));
+    }
 }
 
 const ICON_BYTES: &[u8] = include_bytes!("../assets/tray-icon.png");
@@ -34,20 +47,22 @@ pub fn install(
     let icon = load_icon()?;
     let menu = Menu::new();
 
-    menu.append(&MenuItem::with_id(
+    let region_item = MenuItem::with_id(
         ID_REGION,
         format!("Capture Region    {region_label}"),
         true,
         None,
-    ))
-    .context("append Capture Region menu item")?;
-    menu.append(&MenuItem::with_id(
+    );
+    menu.append(&region_item)
+        .context("append Capture Region menu item")?;
+    let screen_item = MenuItem::with_id(
         ID_SCREEN,
         format!("Capture Screen    {screen_label}"),
         true,
         None,
-    ))
-    .context("append Capture Screen menu item")?;
+    );
+    menu.append(&screen_item)
+        .context("append Capture Screen menu item")?;
 
     menu.append(&PredefinedMenuItem::separator())
         .context("append separator")?;
@@ -92,6 +107,8 @@ pub fn install(
     Ok(TrayGuard {
         _tray: tray,
         autostart_item,
+        region_item,
+        screen_item,
     })
 }
 

@@ -201,18 +201,22 @@ impl Overlay {
 
         #[cfg(not(target_os = "macos"))]
         let window = {
-            let target_monitor = event_loop.available_monitors().find(|m| {
-                let pos = m.position();
-                pos.x == monitor_geom.x && pos.y == monitor_geom.y
-            });
+            // On Windows: create the window with explicit physical position +
+            // size at the target monitor, initially hidden. We render the
+            // first frame in this function (below) and only then make it
+            // visible, so the user never sees the default white client area
+            // that `Fullscreen::Borderless` flashes at (0, 0) before it
+            // expands to fill the screen.
+            let position = winit::dpi::PhysicalPosition::new(monitor_geom.x, monitor_geom.y);
+            let size = winit::dpi::PhysicalSize::new(monitor_geom.width, monitor_geom.height);
             let attrs = WindowAttributes::default()
                 .with_title("quickshot overlay")
                 .with_decorations(false)
                 .with_resizable(false)
-                .with_fullscreen(Some(winit::window::Fullscreen::Borderless(target_monitor)));
-            let win = event_loop.create_window(attrs).context("create window")?;
-            win.focus_window();
-            win
+                .with_visible(false)
+                .with_position(position)
+                .with_inner_size(size);
+            event_loop.create_window(attrs).context("create window")?
         };
 
         let scale_factor = window.scale_factor() as f32;
@@ -225,7 +229,7 @@ impl Overlay {
         let surface =
             Surface::new(&context, window.clone()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
 
-        Ok(Self {
+        let mut overlay = Self {
             window,
             surface,
             frame,
@@ -252,7 +256,19 @@ impl Overlay {
             window_list: snap::enumerate_windows(monitor_geom, std::process::id(), scale_factor),
             annotation_drag: None,
             hovered_annotation_idx: None,
-        })
+        };
+
+        // Windows: paint the first frame while the window is still hidden,
+        // then reveal it. Without this, `with_visible(false)` → request_redraw
+        // would still flash a default white client area on the first frame.
+        #[cfg(target_os = "windows")]
+        {
+            let _ = overlay.redraw();
+            overlay.window.set_visible(true);
+            overlay.window.focus_window();
+        }
+
+        Ok(overlay)
     }
 
     /// Translate one winit WindowEvent into a state transition and return

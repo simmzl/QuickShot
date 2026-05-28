@@ -90,6 +90,14 @@ impl PinWindow {
         #[cfg(target_os = "macos")]
         crate::overlay::set_macos_window_level(&window, 3);
 
+        // Windows (and any non-macOS): use winit's cross-platform
+        // `set_window_level(AlwaysOnTop)`, which maps to
+        // `SetWindowPos(HWND_TOPMOST, ...)` on Win32. Without this the pin
+        // gets z-ordered like a normal window and any subsequent click on
+        // another app raises that app above the pin.
+        #[cfg(not(target_os = "macos"))]
+        window.set_window_level(winit::window::WindowLevel::AlwaysOnTop);
+
         let context =
             SoftContext::new(window.clone()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
         let surface = softbuffer::Surface::new(&context, window.clone())

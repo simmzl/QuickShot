@@ -161,6 +161,7 @@ struct RawGeneral {
     notification_on_fullscreen: Option<bool>,
 }
 
+#[cfg(not(target_os = "windows"))]
 pub const DEFAULT_TOML: &str = r#"# quickshot config — edit and restart the daemon to apply changes.
 # Regenerate defaults by deleting this file and re-launching quickshot.
 
@@ -190,30 +191,86 @@ filename_template = "Screenshot_{datetime}.png"
 notification_on_fullscreen = true
 "#;
 
+#[cfg(target_os = "windows")]
+pub const DEFAULT_TOML: &str = r#"# quickshot config — edit and restart the daemon to apply changes.
+# Regenerate defaults by deleting this file and re-launching quickshot.
+
+[hotkey]
+# Format: modifiers joined by "+", ending with a key. Modifiers (case-insensitive):
+#   Ctrl / Alt / Shift / Meta / Super (Win key) / Cmd (alias for Meta)
+# Keys: A-Z, 0-9, F1-F24, or named keys (Space, Enter, Tab, Backspace, Escape).
+# Note: Win+Shift+S is reserved by Windows Snip & Sketch; avoid Super/Meta+Shift+S.
+region = "Ctrl+Shift+A"
+fullscreen = "Ctrl+Shift+S"
+
+[save]
+# When true, every successful capture also writes a PNG to `directory`.
+enabled = false
+# `~` is expanded to %USERPROFILE%. Missing directories are created.
+directory = "~/Pictures"
+# Available placeholders: {date}, {time}, {datetime}, {w}, {h}, {mode}
+#   {date}     2026-04-19
+#   {time}     15-04-30
+#   {datetime} 2026-04-19_15-04-30
+#   {w}, {h}   1920, 1080 (physical pixels)
+#   {mode}     region | fullscreen
+filename_template = "Screenshot_{datetime}.png"
+
+[general]
+# Show a system notification after a successful full-screen capture.
+# Region captures never show one (overlay dismissal is already feedback).
+notification_on_fullscreen = true
+"#;
+
 pub fn config_path() -> Option<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         if !xdg.is_empty() {
             return Some(PathBuf::from(xdg).join("quickshot").join("config.toml"));
         }
     }
-    let home = std::env::var("HOME").ok()?;
-    Some(
-        PathBuf::from(home)
-            .join(".config")
-            .join("quickshot")
-            .join("config.toml"),
-    )
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            if !appdata.is_empty() {
+                return Some(PathBuf::from(appdata).join("quickshot").join("config.toml"));
+            }
+        }
+        let home = home_dir()?;
+        Some(home.join(".config").join("quickshot").join("config.toml"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = home_dir()?;
+        Some(home.join(".config").join("quickshot").join("config.toml"))
+    }
+}
+
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(p) = std::env::var("USERPROFILE") {
+            if !p.is_empty() {
+                return Some(PathBuf::from(p));
+            }
+        }
+        if let (Ok(drive), Ok(path)) = (std::env::var("HOMEDRIVE"), std::env::var("HOMEPATH")) {
+            if !drive.is_empty() && !path.is_empty() {
+                return Some(PathBuf::from(format!("{drive}{path}")));
+            }
+        }
+    }
+    std::env::var("HOME").ok().map(PathBuf::from)
 }
 
 pub fn expand_home(input: &str) -> PathBuf {
     if let Some(rest) = input.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(rest);
+        if let Some(home) = home_dir() {
+            return home.join(rest);
         }
     }
     if input == "~" {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home);
+        if let Some(home) = home_dir() {
+            return home;
         }
     }
     PathBuf::from(input)
@@ -350,12 +407,19 @@ fn parse_code(s: &str) -> Option<Code> {
     }
 }
 
+#[cfg(target_os = "windows")]
+const DEFAULT_PRIMARY_MODIFIER: &str = "Ctrl";
+#[cfg(not(target_os = "windows"))]
+const DEFAULT_PRIMARY_MODIFIER: &str = "Cmd";
+
 fn default_region_hotkey() -> ParsedHotkey {
-    parse_hotkey_string("Cmd+Shift+A").expect("default region hotkey must parse")
+    let s = format!("{DEFAULT_PRIMARY_MODIFIER}+Shift+A");
+    parse_hotkey_string(&s).expect("default region hotkey must parse")
 }
 
 fn default_fullscreen_hotkey() -> ParsedHotkey {
-    parse_hotkey_string("Cmd+Shift+S").expect("default fullscreen hotkey must parse")
+    let s = format!("{DEFAULT_PRIMARY_MODIFIER}+Shift+S");
+    parse_hotkey_string(&s).expect("default fullscreen hotkey must parse")
 }
 
 #[cfg(test)]
@@ -435,6 +499,7 @@ mod tests {
         assert!(parse_hotkey_string("Cmd+Banana").is_err());
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn expand_home_basic() {
         unsafe { std::env::set_var("HOME", "/Users/tester") };
@@ -444,11 +509,23 @@ mod tests {
         assert_eq!(expand_home("relative/path"), PathBuf::from("relative/path"));
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn expand_home_basic() {
+        unsafe { std::env::set_var("USERPROFILE", r"C:\Users\tester") };
+        assert_eq!(expand_home("~/Desktop"), PathBuf::from(r"C:\Users\tester\Desktop"));
+        assert_eq!(expand_home("~"), PathBuf::from(r"C:\Users\tester"));
+        assert_eq!(expand_home(r"C:\absolute\path"), PathBuf::from(r"C:\absolute\path"));
+        assert_eq!(expand_home("relative/path"), PathBuf::from("relative/path"));
+    }
+
     #[test]
     fn defaults_parse() {
         let c = Config::defaults();
-        assert_eq!(c.hotkey.region.raw, "Cmd+Shift+A");
-        assert_eq!(c.hotkey.fullscreen.raw, "Cmd+Shift+S");
+        let expected_region = format!("{DEFAULT_PRIMARY_MODIFIER}+Shift+A");
+        let expected_full = format!("{DEFAULT_PRIMARY_MODIFIER}+Shift+S");
+        assert_eq!(c.hotkey.region.raw, expected_region);
+        assert_eq!(c.hotkey.fullscreen.raw, expected_full);
         assert!(!c.save.enabled);
         assert_eq!(c.save.filename_template, "Screenshot_{datetime}.png");
         assert!(c.general.notification_on_fullscreen);
@@ -483,7 +560,8 @@ mod tests {
         "#;
         let c = Config::parse(src).unwrap();
         assert!(c.save.enabled);
-        assert_eq!(c.hotkey.region.raw, "Cmd+Shift+A");
+        let expected_region = format!("{DEFAULT_PRIMARY_MODIFIER}+Shift+A");
+        assert_eq!(c.hotkey.region.raw, expected_region);
         assert_eq!(c.save.filename_template, "Screenshot_{datetime}.png");
     }
 
@@ -500,12 +578,14 @@ mod tests {
             region = "Hyper+Z"
         "#;
         let c = Config::parse(src).unwrap();
-        assert_eq!(c.hotkey.region.raw, "Cmd+Shift+A");
+        let expected = format!("{DEFAULT_PRIMARY_MODIFIER}+Shift+A");
+        assert_eq!(c.hotkey.region.raw, expected);
     }
 
     #[test]
     fn default_toml_is_valid() {
         let c = Config::parse(DEFAULT_TOML).unwrap();
-        assert_eq!(c.hotkey.region.raw, "Cmd+Shift+A");
+        let expected = format!("{DEFAULT_PRIMARY_MODIFIER}+Shift+A");
+        assert_eq!(c.hotkey.region.raw, expected);
     }
 }
