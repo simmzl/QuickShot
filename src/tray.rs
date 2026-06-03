@@ -109,7 +109,7 @@ pub fn install(
     // mode), the way WiFi/battery icons stay visible in both themes. On
     // Windows/Linux this is false and we ship a full-color icon instead.
     let tray = TrayIconBuilder::new()
-        .with_tooltip("quickshot")
+        .with_tooltip("QuickShot")
         .with_icon(icon)
         .with_icon_as_template(ICON_AS_TEMPLATE)
         .with_menu(Box::new(menu))

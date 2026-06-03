@@ -5,17 +5,17 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>quickshot</string>
+    <string>QuickShot</string>
     <key>CFBundleExecutable</key>
-    <string>quickshot</string>
+    <string>QuickShot</string>
     <key>CFBundleIconFile</key>
-    <string>quickshot</string>
+    <string>QuickShot</string>
     <key>CFBundleIdentifier</key>
     <string>{{BUNDLE_ID}}</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>quickshot</string>
+    <string>QuickShot</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -29,7 +29,7 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>quickshot needs Screen Recording permission to capture screenshots. You can revoke this in System Settings → Privacy &amp; Security → Screen Recording.</string>
+    <string>QuickShot needs Screen Recording permission to capture screenshots. You can revoke this in System Settings → Privacy &amp; Security → Screen Recording.</string>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
 </dict>

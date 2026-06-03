@@ -184,7 +184,7 @@ impl App {
         set_macos_activation_policy(0);
 
         let default_name = format!(
-            "quickshot-{}.png",
+            "QuickShot-{}.png",
             time::OffsetDateTime::now_local()
                 .unwrap_or_else(|_| time::OffsetDateTime::now_utc())
                 .format(time::macros::format_description!(
@@ -368,7 +368,7 @@ impl App {
 impl ApplicationHandler<UserEvent> for App {
     fn new_events(&mut self, _event_loop: &ActiveEventLoop, cause: StartCause) {
         if matches!(cause, StartCause::Init) && self.tray.is_none() {
-            eprintln!("quickshot: new_events(Init) — setting NSApp policy and installing tray");
+            eprintln!("QuickShot: new_events(Init) — setting NSApp policy and installing tray");
             #[cfg(target_os = "macos")]
             set_macos_activation_policy_accessory();
             let initial_autostart = crate::autostart::is_installed();
@@ -379,10 +379,10 @@ impl ApplicationHandler<UserEvent> for App {
                 initial_autostart,
             ) {
                 Ok(guard) => {
-                    eprintln!("quickshot: tray installed OK");
+                    eprintln!("QuickShot: tray installed OK");
                     self.tray = Some(guard);
                 }
-                Err(e) => eprintln!("quickshot: tray install error: {e:?}"),
+                Err(e) => eprintln!("QuickShot: tray install error: {e:?}"),
             }
         }
     }
@@ -462,12 +462,12 @@ fn set_macos_activation_policy(policy: i64) {
     unsafe {
         let ns_app_class = class(c"NSApplication");
         if ns_app_class.is_null() {
-            eprintln!("quickshot: objc_getClass(NSApplication) = null");
+            eprintln!("QuickShot: objc_getClass(NSApplication) = null");
             return;
         }
         let ns_app = msg_send_id(ns_app_class, sel(c"sharedApplication"));
         if ns_app.is_null() {
-            eprintln!("quickshot: NSApplication sharedApplication = null");
+            eprintln!("QuickShot: NSApplication sharedApplication = null");
             return;
         }
         msg_send_set_int(ns_app, sel(c"setActivationPolicy:"), policy);

@@ -1,8 +1,8 @@
-# quickshot
+# QuickShot
 
 Small, fast screenshot daemon for **macOS** and **Windows**. Pure Rust, ~2-3 MB binary, lives in the system tray.
 
-[![Release](https://img.shields.io/github/v/release/simmzl/quickshot)](https://github.com/simmzl/quickshot/releases/latest)
+[![Release](https://img.shields.io/github/v/release/simmzl/QuickShot)](https://github.com/simmzl/QuickShot/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 > English | [简体中文](README.zh-CN.md)
@@ -20,16 +20,16 @@ Small, fast screenshot daemon for **macOS** and **Windows**. Pure Rust, ~2-3 MB 
 
 ## Install
 
-Pre-built binaries are attached to each [GitHub Release](https://github.com/simmzl/quickshot/releases/latest).
+Pre-built binaries are attached to each [GitHub Release](https://github.com/simmzl/QuickShot/releases/latest).
 
 ### macOS
 
-Download `quickshot-<VERSION>.dmg`. Double-click → drag `quickshot.app` to `Applications` → eject the DMG.
+Download `QuickShot-<VERSION>.dmg`. Double-click → drag `QuickShot.app` to `Applications` → eject the DMG.
 
 First launch: Finder will warn the app is from an "unidentified developer" (normal for open-source apps without an Apple Developer ID signature). Work around it once:
 
 1. Open `Applications` in Finder.
-2. **Right-click** `quickshot.app` → **Open** → click **Open** in the confirmation sheet.
+2. **Right-click** `QuickShot.app` → **Open** → click **Open** in the confirmation sheet.
 
 macOS remembers the override; future launches (including autostart) work without the prompt.
 
@@ -37,7 +37,7 @@ On the first capture, macOS will ask for **Screen Recording** permission. Grant 
 
 ### Windows
 
-Download `quickshot-<VERSION>-windows-x64.zip`. Extract anywhere and double-click `quickshot.exe`. The app lives in the system tray — no console window appears.
+Download `QuickShot-<VERSION>-windows-x64.zip`. Extract anywhere and double-click `QuickShot.exe`. The app lives in the system tray — no console window appears.
 
 On first launch SmartScreen may show *"Windows protected your PC"*; click **More info → Run anyway** once. Windows remembers the override.
 
@@ -79,10 +79,10 @@ Right-click the tray icon for: **Capture Region**, **Capture Screen**, **Edit Co
 
 Config path:
 
-- macOS: `~/.config/quickshot/config.toml`
-- Windows: `%APPDATA%\quickshot\config.toml`
+- macOS: `~/.config/QuickShot/config.toml`
+- Windows: `%APPDATA%\QuickShot\config.toml`
 
-Defaults are written on first run. **Edits are auto-reloaded within 1 second** — quickshot polls the file's mtime; on change it rebinds hotkeys, updates the tray menu labels, and refreshes save / notification settings live. No restart needed.
+Defaults are written on first run. **Edits are auto-reloaded within 1 second** — QuickShot polls the file's mtime; on change it rebinds hotkeys, updates the tray menu labels, and refreshes save / notification settings live. No restart needed.
 
 ```toml
 [hotkey]
@@ -124,22 +124,22 @@ Filename template placeholders:
 Tray menu → **Start at Login**, or from CLI:
 
 ```
-/Applications/quickshot.app/Contents/MacOS/quickshot --install-autostart
-/Applications/quickshot.app/Contents/MacOS/quickshot --uninstall-autostart
+/Applications/QuickShot.app/Contents/MacOS/QuickShot --install-autostart
+/Applications/QuickShot.app/Contents/MacOS/QuickShot --uninstall-autostart
 ```
 
-Installs `~/Library/LaunchAgents/com.quickshot.daemon.plist`. Takes effect at next login. For bare-binary users (running `target/release/quickshot` directly), the same flags work — the plist points at whatever path the running binary lives at.
+Installs `~/Library/LaunchAgents/com.QuickShot.daemon.plist`. Takes effect at next login. For bare-binary users (running `target/release/QuickShot` directly), the same flags work — the plist points at whatever path the running binary lives at.
 
 ### Windows
 
-Tray menu → **Start at Login**. Writes a string value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\quickshot` pointing at the running exe. Takes effect at next login. Verify or remove from PowerShell:
+Tray menu → **Start at Login**. Writes a string value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\QuickShot` pointing at the running exe. Takes effect at next login. Verify or remove from PowerShell:
 
 ```powershell
 # Check
-reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v quickshot
+reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v QuickShot
 
 # Remove (toggle from the tray is the normal way)
-reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v quickshot /f
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v QuickShot /f
 ```
 
 ## Build
@@ -150,7 +150,7 @@ Requires Rust stable (1.75+).
 cargo build --release
 ```
 
-Binary lands at `target/release/quickshot[.exe]`. The release profile is size-optimized (`opt-level="z"`, `lto=true`, `codegen-units=1`, `strip=true`, `panic="abort"`); the macOS universal binary is ~3.2 MB, the Windows binary ~2.1 MB.
+Binary lands at `target/release/QuickShot[.exe]`. The release profile is size-optimized (`opt-level="z"`, `lto=true`, `codegen-units=1`, `strip=true`, `panic="abort"`); the macOS universal binary is ~3.2 MB, the Windows binary ~2.1 MB.
 
 Windows builds also require the MSVC linker (`link.exe`). Install **Visual Studio Build Tools** with the **Desktop development with C++** workload, or set up the MSVC env via `vcvars64.bat` before invoking `cargo`.
 
@@ -158,12 +158,12 @@ Windows builds also require the MSVC linker (`link.exe`). Install **Visual Studi
 
 | Platform | Script | Produces |
 |---|---|---|
-| macOS | `bash scripts/package.sh` | `dist/quickshot.app` (universal x86_64 + aarch64, ad-hoc signed) + `dist/quickshot-<VERSION>.dmg` |
-| Windows | `pwsh scripts/package.ps1` (run from a Developer PowerShell) | `dist/quickshot-<VERSION>-windows-x64/` (exe + README) + `dist/quickshot-<VERSION>-windows-x64.zip` |
+| macOS | `bash scripts/package.sh` | `dist/QuickShot.app` (universal x86_64 + aarch64, ad-hoc signed) + `dist/QuickShot-<VERSION>.dmg` |
+| Windows | `pwsh scripts/package.ps1` (run from a Developer PowerShell) | `dist/QuickShot-<VERSION>-windows-x64/` (exe + README) + `dist/QuickShot-<VERSION>-windows-x64.zip` |
 
 macOS env overrides for `package.sh`:
 
-- `BUNDLE_ID` (default `com.quickshot.app`)
+- `BUNDLE_ID` (default `com.QuickShot.app`)
 - `SIGN_IDENTITY` (default `-` for ad-hoc; pass an Apple Developer ID identity string for full signing)
 
 ### Release CI
@@ -188,13 +188,13 @@ git push origin master v1.2.3
 
 ```
 # Disable autostart (only if you enabled it):
-/Applications/quickshot.app/Contents/MacOS/quickshot --uninstall-autostart
+/Applications/QuickShot.app/Contents/MacOS/QuickShot --uninstall-autostart
 
 # Remove the app:
-rm -rf /Applications/quickshot.app
+rm -rf /Applications/QuickShot.app
 
 # Optional: remove config + cached state:
-rm -rf ~/.config/quickshot
+rm -rf ~/.config/QuickShot
 ```
 
 ### Windows
@@ -203,11 +203,11 @@ rm -rf ~/.config/quickshot
 2. Delete the extracted folder.
 3. (Optional) Disable autostart if you had enabled it:
    ```powershell
-   reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v quickshot /f
+   reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v QuickShot /f
    ```
 4. (Optional) Remove the config dir:
    ```powershell
-   Remove-Item -Recurse "$env:APPDATA\quickshot"
+   Remove-Item -Recurse "$env:APPDATA\QuickShot"
    ```
 
 ## License

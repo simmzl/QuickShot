@@ -68,7 +68,7 @@ impl PinWindow {
         use winit::window::WindowAttributes;
 
         let attrs = WindowAttributes::default()
-            .with_title("quickshot pin")
+            .with_title("QuickShot pin")
             .with_decorations(false)
             .with_resizable(false)
             .with_inner_size(LogicalSize::new(

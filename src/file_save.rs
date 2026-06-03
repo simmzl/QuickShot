@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn uniquify_no_collision() {
-        let dir = std::env::temp_dir().join("quickshot_uniquify_test_noclash");
+        let dir = std::env::temp_dir().join("QuickShot_uniquify_test_noclash");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let p = dir.join("fresh.png");
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn uniquify_adds_suffix_on_collision() {
-        let dir = std::env::temp_dir().join("quickshot_uniquify_test_clash");
+        let dir = std::env::temp_dir().join("QuickShot_uniquify_test_clash");
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let existing = dir.join("shot.png");

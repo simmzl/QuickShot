@@ -260,7 +260,7 @@ fn load_cjk_fallback() -> Option<FontdueFont> {
                 Ok(font) => {
                     if font.lookup_glyph_index(probe) != 0 {
                         eprintln!(
-                            "quickshot: CJK fallback loaded from {path} (face {index})"
+                            "QuickShot: CJK fallback loaded from {path} (face {index})"
                         );
                         return Some(font);
                     }
@@ -274,7 +274,7 @@ fn load_cjk_fallback() -> Option<FontdueFont> {
         }
     }
 
-    eprintln!("quickshot: no CJK fallback face found; CJK input will render as tofu");
+    eprintln!("QuickShot: no CJK fallback face found; CJK input will render as tofu");
     None
 }
 

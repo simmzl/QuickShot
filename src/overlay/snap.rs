@@ -44,7 +44,7 @@ pub fn enumerate_windows(
     }
 
     eprintln!(
-        "quickshot: snap enumeration: monitor_geom=({}, {}, {}x{}) scale={}",
+        "QuickShot: snap enumeration: monitor_geom=({}, {}, {}x{}) scale={}",
         monitor_geom.x, monitor_geom.y, monitor_geom.width, monitor_geom.height, scale_factor,
     );
 
@@ -84,7 +84,7 @@ pub fn enumerate_windows(
 
         // Read owner + window names for diagnostics (best-effort — may be
         // absent for some apps). Used in eprintlns so the user can read
-        // /tmp/quickshot.log and see what layer each window is on.
+        // /tmp/QuickShot.log and see what layer each window is on.
         let owner_name = read_string(dict, "kCGWindowOwnerName").unwrap_or_default();
         let window_name = read_string(dict, "kCGWindowName").unwrap_or_default();
 

@@ -42,14 +42,14 @@ jobs:
       - name: Inspect artifacts
         run: |
           ls -lh dist/
-          file dist/quickshot.app/Contents/MacOS/quickshot
-          codesign --verify --verbose=2 dist/quickshot.app
+          file dist/QuickShot.app/Contents/MacOS/QuickShot
+          codesign --verify --verbose=2 dist/QuickShot.app
 
       - name: Upload .dmg artifact
         uses: actions/upload-artifact@v4
         with:
           name: macos-dmg
-          path: dist/quickshot-*.dmg
+          path: dist/QuickShot-*.dmg
           if-no-files-found: error
 
   # ---------------- Windows: MSVC .exe + .zip ----------------
@@ -91,7 +91,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-zip
-          path: dist/quickshot-*-windows-x64.zip
+          path: dist/QuickShot-*-windows-x64.zip
           if-no-files-found: error
 
   # ---------------- Publish a single GitHub Release ----------------
@@ -111,21 +111,21 @@ jobs:
       - name: Create GitHub Release + upload assets
         uses: softprops/action-gh-release@v2
         with:
-          name: quickshot ${{ github.ref_name }}
+          name: QuickShot ${{ github.ref_name }}
           body: |
             ## Install (macOS)
 
-            1. Download `quickshot-<VERSION>.dmg` below.
-            2. Open it and drag `quickshot.app` to `Applications`.
+            1. Download `QuickShot-<VERSION>.dmg` below.
+            2. Open it and drag `QuickShot.app` to `Applications`.
             3. **First launch:** right-click the app → **Open** → **Open** in the Gatekeeper dialog. This is required once for any app without an Apple Developer ID signature.
-            4. Grant **Screen Recording** permission on the first capture (System Settings → Privacy & Security → Screen Recording → enable quickshot → relaunch).
+            4. Grant **Screen Recording** permission on the first capture (System Settings → Privacy & Security → Screen Recording → enable QuickShot → relaunch).
 
             Universal binary (x86_64 + Apple Silicon), ad-hoc signed.
 
             ## Install (Windows)
 
-            1. Download `quickshot-<VERSION>-windows-x64.zip` below.
-            2. Extract anywhere and double-click `quickshot.exe`. The app lives in the system tray.
+            1. Download `QuickShot-<VERSION>-windows-x64.zip` below.
+            2. Extract anywhere and double-click `QuickShot.exe`. The app lives in the system tray.
             3. SmartScreen may warn on first launch — click **More info → Run anyway**.
 
             x86_64 MSVC release, no console window.
@@ -137,10 +137,10 @@ jobs:
             - Annotation tools while adjusting a region: `A` / `R` / `E` / `B` = Arrow / Rect / Ellipse / Mosaic, `M` = Move; `Cmd+Z` / `Ctrl+Z` undo, `Cmd+Shift+Z` / `Ctrl+Shift+Z` redo.
             - Tray menu: Capture Region/Screen, Edit Config, Start at Login, Quit.
 
-            Config path: `~/.config/quickshot/config.toml` (macOS) or `%APPDATA%\quickshot\config.toml` (Windows). Edits are auto-reloaded within one second — no restart needed.
+            Config path: `~/.config/QuickShot/config.toml` (macOS) or `%APPDATA%\QuickShot\config.toml` (Windows). Edits are auto-reloaded within one second — no restart needed.
           files: |
-            dist/quickshot-*.dmg
-            dist/quickshot-*-windows-x64.zip
+            dist/QuickShot-*.dmg
+            dist/QuickShot-*-windows-x64.zip
           draft: false
           prerelease: false
           fail_on_unmatched_files: true

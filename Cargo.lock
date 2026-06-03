@@ -3,6 +3,29 @@
 version = 4
 
 [[package]]
+name = "QuickShot"
+version = "1.1.5"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "core-foundation 0.10.1",
+ "core-graphics",
+ "fontdue",
+ "global-hotkey",
+ "image",
+ "notify-rust",
+ "rfd",
+ "serde",
+ "softbuffer",
+ "time",
+ "toml 0.8.2",
+ "tray-icon",
+ "winit",
+ "winresource",
+ "xcap",
+]
+
+[[package]]
 name = "ab_glyph"
 version = "0.2.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2921,29 +2944,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "958f21e8e7ceb5a1aa7fa87fab28e7c75976e0bfe7e23ff069e0a260f894067d"
 dependencies = [
  "memchr",
-]
-
-[[package]]
-name = "quickshot"
-version = "1.1.5"
-dependencies = [
- "anyhow",
- "arboard",
- "core-foundation 0.10.1",
- "core-graphics",
- "fontdue",
- "global-hotkey",
- "image",
- "notify-rust",
- "rfd",
- "serde",
- "softbuffer",
- "time",
- "toml 0.8.2",
- "tray-icon",
- "winit",
- "winresource",
- "xcap",
 ]
 
 [[package]]

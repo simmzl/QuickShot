@@ -1,8 +1,8 @@
-# quickshot
+# QuickShot
 
 小巧、快速的截图守护进程，支持 **macOS** 与 **Windows**。纯 Rust 实现，二进制约 2-3 MB，常驻系统托盘。
 
-[![Release](https://img.shields.io/github/v/release/simmzl/quickshot)](https://github.com/simmzl/quickshot/releases/latest)
+[![Release](https://img.shields.io/github/v/release/simmzl/QuickShot)](https://github.com/simmzl/QuickShot/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#许可证)
 
 > [English](README.md) | 简体中文
@@ -20,24 +20,24 @@
 
 ## 安装
 
-每个 [GitHub Release](https://github.com/simmzl/quickshot/releases/latest) 都附带预编译产物。
+每个 [GitHub Release](https://github.com/simmzl/QuickShot/releases/latest) 都附带预编译产物。
 
 ### macOS
 
-下载 `quickshot-<VERSION>.dmg`。双击 → 把 `quickshot.app` 拖到 `Applications` → 推出 DMG。
+下载 `QuickShot-<VERSION>.dmg`。双击 → 把 `QuickShot.app` 拖到 `Applications` → 推出 DMG。
 
 首次启动时，Finder 会提示「来自身份不明的开发者」（对于未购买 Apple Developer ID 签名的开源应用，这是正常现象）。绕过一次即可：
 
 1. 在 Finder 中打开 `Applications`。
-2. **右键**点击 `quickshot.app` → **打开** → 在确认对话框中点 **打开**。
+2. **右键**点击 `QuickShot.app` → **打开** → 在确认对话框中点 **打开**。
 
 macOS 会记住这次授权；以后启动（包括开机自启）都不会再弹这个提示。
 
-首次截图时，macOS 会请求**屏幕录制**权限。在 **系统设置 → 隐私与安全性 → 屏幕录制** 中启用 `quickshot`，然后重新启动应用。
+首次截图时，macOS 会请求**屏幕录制**权限。在 **系统设置 → 隐私与安全性 → 屏幕录制** 中启用 `QuickShot`，然后重新启动应用。
 
 ### Windows
 
-下载 `quickshot-<VERSION>-windows-x64.zip`。解压到任意目录，双击 `quickshot.exe`。程序会常驻系统托盘 —— 不会弹出黑色控制台窗口。
+下载 `QuickShot-<VERSION>-windows-x64.zip`。解压到任意目录，双击 `QuickShot.exe`。程序会常驻系统托盘 —— 不会弹出黑色控制台窗口。
 
 首次运行时，SmartScreen 可能提示 *"Windows 已保护你的电脑"*。点击 **更多信息 → 仍要运行** 一次即可，系统会记住这次授权。
 
@@ -79,10 +79,10 @@ macOS 会记住这次授权；以后启动（包括开机自启）都不会再�
 
 配置文件路径：
 
-- macOS：`~/.config/quickshot/config.toml`
-- Windows：`%APPDATA%\quickshot\config.toml`
+- macOS：`~/.config/QuickShot/config.toml`
+- Windows：`%APPDATA%\QuickShot\config.toml`
 
-首次运行会写入默认配置。**编辑后 1 秒内自动重新加载** —— quickshot 会轮询文件的 mtime，发现变更时实时重新绑定快捷键、更新托盘菜单标签、刷新保存 / 通知设置，无需重启。
+首次运行会写入默认配置。**编辑后 1 秒内自动重新加载** —— QuickShot 会轮询文件的 mtime，发现变更时实时重新绑定快捷键、更新托盘菜单标签、刷新保存 / 通知设置，无需重启。
 
 ```toml
 [hotkey]
@@ -124,22 +124,22 @@ notification_on_fullscreen = true
 托盘菜单 → **开机自启 (Start at Login)**，或通过命令行：
 
 ```
-/Applications/quickshot.app/Contents/MacOS/quickshot --install-autostart
-/Applications/quickshot.app/Contents/MacOS/quickshot --uninstall-autostart
+/Applications/QuickShot.app/Contents/MacOS/QuickShot --install-autostart
+/Applications/QuickShot.app/Contents/MacOS/QuickShot --uninstall-autostart
 ```
 
-会安装 `~/Library/LaunchAgents/com.quickshot.daemon.plist`，下次登录时生效。对于直接运行 `target/release/quickshot` 的用户，同样的命令行参数也有效 —— plist 中会写入当前运行二进制的实际路径。
+会安装 `~/Library/LaunchAgents/com.QuickShot.daemon.plist`，下次登录时生效。对于直接运行 `target/release/QuickShot` 的用户，同样的命令行参数也有效 —— plist 中会写入当前运行二进制的实际路径。
 
 ### Windows
 
-托盘菜单 → **开机自启 (Start at Login)**。会在注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\quickshot` 下写入一个指向当前 exe 的字符串值，下次登录时生效。可在 PowerShell 中验证或手动移除：
+托盘菜单 → **开机自启 (Start at Login)**。会在注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\QuickShot` 下写入一个指向当前 exe 的字符串值，下次登录时生效。可在 PowerShell 中验证或手动移除：
 
 ```powershell
 # 查询
-reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v quickshot
+reg query "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v QuickShot
 
 # 移除（通常从托盘菜单关闭即可）
-reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v quickshot /f
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v QuickShot /f
 ```
 
 ## 从源码构建
@@ -150,7 +150,7 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v quickshot /f
 cargo build --release
 ```
 
-产物在 `target/release/quickshot[.exe]`。Release 配置已针对体积优化（`opt-level="z"`、`lto=true`、`codegen-units=1`、`strip=true`、`panic="abort"`）：macOS 通用二进制约 3.2 MB，Windows 二进制约 2.1 MB。
+产物在 `target/release/QuickShot[.exe]`。Release 配置已针对体积优化（`opt-level="z"`、`lto=true`、`codegen-units=1`、`strip=true`、`panic="abort"`）：macOS 通用二进制约 3.2 MB，Windows 二进制约 2.1 MB。
 
 Windows 端构建还需要 MSVC 链接器 (`link.exe`)。请安装 **Visual Studio Build Tools** 并勾选 **使用 C++ 的桌面开发** 工作负载；或者在调用 `cargo` 之前先用 `vcvars64.bat` 初始化 MSVC 环境。
 
@@ -158,12 +158,12 @@ Windows 端构建还需要 MSVC 链接器 (`link.exe`)。请安装 **Visual Stud
 
 | 平台 | 脚本 | 产物 |
 |---|---|---|
-| macOS | `bash scripts/package.sh` | `dist/quickshot.app`（universal x86_64 + aarch64，ad-hoc 签名）+ `dist/quickshot-<VERSION>.dmg` |
-| Windows | `pwsh scripts/package.ps1`（在 Developer PowerShell 中运行） | `dist/quickshot-<VERSION>-windows-x64/`（exe + README）+ `dist/quickshot-<VERSION>-windows-x64.zip` |
+| macOS | `bash scripts/package.sh` | `dist/QuickShot.app`（universal x86_64 + aarch64，ad-hoc 签名）+ `dist/QuickShot-<VERSION>.dmg` |
+| Windows | `pwsh scripts/package.ps1`（在 Developer PowerShell 中运行） | `dist/QuickShot-<VERSION>-windows-x64/`（exe + README）+ `dist/QuickShot-<VERSION>-windows-x64.zip` |
 
 macOS 端 `package.sh` 支持的环境变量：
 
-- `BUNDLE_ID`（默认 `com.quickshot.app`）
+- `BUNDLE_ID`（默认 `com.QuickShot.app`）
 - `SIGN_IDENTITY`（默认 `-` 即 ad-hoc 签名；传入 Apple Developer ID 字符串可做完整签名）
 
 ### Release CI
@@ -188,13 +188,13 @@ git push origin master v1.2.3
 
 ```
 # 如果之前启用了开机自启，先关闭：
-/Applications/quickshot.app/Contents/MacOS/quickshot --uninstall-autostart
+/Applications/QuickShot.app/Contents/MacOS/QuickShot --uninstall-autostart
 
 # 删除应用本体：
-rm -rf /Applications/quickshot.app
+rm -rf /Applications/QuickShot.app
 
 # 可选：删除配置 + 缓存：
-rm -rf ~/.config/quickshot
+rm -rf ~/.config/QuickShot
 ```
 
 ### Windows
@@ -203,11 +203,11 @@ rm -rf ~/.config/quickshot
 2. 删除解压出的文件夹。
 3. （可选）如果启用过开机自启，移除注册表项：
    ```powershell
-   reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v quickshot /f
+   reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v QuickShot /f
    ```
 4. （可选）删除配置目录：
    ```powershell
-   Remove-Item -Recurse "$env:APPDATA\quickshot"
+   Remove-Item -Recurse "$env:APPDATA\QuickShot"
    ```
 
 ## 许可证

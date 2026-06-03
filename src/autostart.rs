@@ -1,6 +1,6 @@
-//! Per-user autostart install/uninstall for quickshot.
+//! Per-user autostart install/uninstall for QuickShot.
 //!
-//! - macOS: writes a `~/Library/LaunchAgents/com.quickshot.daemon.plist`.
+//! - macOS: writes a `~/Library/LaunchAgents/com.QuickShot.daemon.plist`.
 //! - Windows: writes a string value under
 //!   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` via `reg.exe`.
 //! - Other Unixes: not supported; functions return an error.
@@ -12,7 +12,7 @@ use anyhow::{bail, Result};
 use std::path::PathBuf;
 
 #[allow(dead_code)]
-const LABEL: &str = "com.quickshot.daemon";
+const LABEL: &str = "com.QuickShot.daemon";
 
 #[cfg(target_os = "macos")]
 pub fn install() -> Result<()> {
@@ -31,7 +31,7 @@ pub fn install() -> Result<()> {
     // Intentionally NOT calling `launchctl load`. launchd scans
     // ~/Library/LaunchAgents/*.plist at login, so the plist is picked up
     // automatically on next login. Calling `launchctl load` now would honor
-    // RunAtLoad=true immediately and spawn a *second* quickshot instance
+    // RunAtLoad=true immediately and spawn a *second* QuickShot instance
     // alongside the process currently running (the one showing the menu).
     println!("installed autostart → {}", plist_path.display());
     println!("(takes effect at next login)");
@@ -72,7 +72,7 @@ pub fn is_installed() -> bool {
 #[cfg(target_os = "windows")]
 const WIN_RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(target_os = "windows")]
-const WIN_VALUE_NAME: &str = "quickshot";
+const WIN_VALUE_NAME: &str = "QuickShot";
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -194,9 +194,9 @@ pub fn render_plist(bin: &str) -> String {
     <key>KeepAlive</key>
     <false/>
     <key>StandardErrorPath</key>
-    <string>/tmp/quickshot.stderr.log</string>
+    <string>/tmp/QuickShot.stderr.log</string>
     <key>StandardOutPath</key>
-    <string>/tmp/quickshot.stdout.log</string>
+    <string>/tmp/QuickShot.stdout.log</string>
 </dict>
 </plist>
 "#
@@ -215,10 +215,10 @@ mod tests {
 
     #[test]
     fn plist_contains_bin_path() {
-        let out = render_plist("/Users/test/quickshot");
-        assert!(out.contains("<string>/Users/test/quickshot</string>"));
+        let out = render_plist("/Users/test/QuickShot");
+        assert!(out.contains("<string>/Users/test/QuickShot</string>"));
         assert!(out.contains("<key>Label</key>"));
-        assert!(out.contains("com.quickshot.daemon"));
+        assert!(out.contains("com.QuickShot.daemon"));
         assert!(out.contains("<key>RunAtLoad</key>"));
         assert!(out.contains("<true/>"));
         assert!(out.contains("<key>KeepAlive</key>"));

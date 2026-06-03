@@ -1,5 +1,5 @@
 //! User-configurable daemon settings, loaded from
-//! `~/.config/quickshot/config.toml` at startup. Never panics on bad input;
+//! `~/.config/QuickShot/config.toml` at startup. Never panics on bad input;
 //! failed fields fall back to defaults with a stderr warning.
 
 use anyhow::{anyhow, bail, Result};
@@ -162,8 +162,8 @@ struct RawGeneral {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub const DEFAULT_TOML: &str = r#"# quickshot config — edit and restart the daemon to apply changes.
-# Regenerate defaults by deleting this file and re-launching quickshot.
+pub const DEFAULT_TOML: &str = r#"# QuickShot config — edit and restart the daemon to apply changes.
+# Regenerate defaults by deleting this file and re-launching QuickShot.
 
 [hotkey]
 # Format: modifiers joined by "+", ending with a key. Modifiers (case-insensitive):
@@ -192,8 +192,8 @@ notification_on_fullscreen = true
 "#;
 
 #[cfg(target_os = "windows")]
-pub const DEFAULT_TOML: &str = r#"# quickshot config — edit and restart the daemon to apply changes.
-# Regenerate defaults by deleting this file and re-launching quickshot.
+pub const DEFAULT_TOML: &str = r#"# QuickShot config — edit and restart the daemon to apply changes.
+# Regenerate defaults by deleting this file and re-launching QuickShot.
 
 [hotkey]
 # Format: modifiers joined by "+", ending with a key. Modifiers (case-insensitive):
@@ -225,23 +225,23 @@ notification_on_fullscreen = true
 pub fn config_path() -> Option<PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         if !xdg.is_empty() {
-            return Some(PathBuf::from(xdg).join("quickshot").join("config.toml"));
+            return Some(PathBuf::from(xdg).join("QuickShot").join("config.toml"));
         }
     }
     #[cfg(target_os = "windows")]
     {
         if let Ok(appdata) = std::env::var("APPDATA") {
             if !appdata.is_empty() {
-                return Some(PathBuf::from(appdata).join("quickshot").join("config.toml"));
+                return Some(PathBuf::from(appdata).join("QuickShot").join("config.toml"));
             }
         }
         let home = home_dir()?;
-        Some(home.join(".config").join("quickshot").join("config.toml"))
+        Some(home.join(".config").join("QuickShot").join("config.toml"))
     }
     #[cfg(not(target_os = "windows"))]
     {
         let home = home_dir()?;
-        Some(home.join(".config").join("quickshot").join("config.toml"))
+        Some(home.join(".config").join("QuickShot").join("config.toml"))
     }
 }
 

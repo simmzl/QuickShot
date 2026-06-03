@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# quickshot packaging script — produces dist/quickshot.app and dist/quickshot-<version>.dmg.
+# QuickShot packaging script — produces dist/QuickShot.app and dist/QuickShot-<version>.dmg.
 #
 # Env overrides:
-#   BUNDLE_ID      bundle identifier     (default: com.quickshot.app)
+#   BUNDLE_ID      bundle identifier     (default: com.QuickShot.app)
 #   SIGN_IDENTITY  codesign identity     (default: "-" — ad-hoc)
 #
 # Requirements:
@@ -14,7 +14,7 @@
 set -euo pipefail
 
 # --- config ----------------------------------------------------------------
-BUNDLE_ID="${BUNDLE_ID:-com.quickshot.app}"
+BUNDLE_ID="${BUNDLE_ID:-com.QuickShot.app}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 
 # --- derive version from Cargo.toml ---------------------------------------
@@ -56,13 +56,13 @@ mkdir -p dist
 
 echo "==> lipo: universal binary"
 lipo -create \
-    target/x86_64-apple-darwin/release/quickshot \
-    target/aarch64-apple-darwin/release/quickshot \
-    -output dist/quickshot-universal
+    target/x86_64-apple-darwin/release/QuickShot \
+    target/aarch64-apple-darwin/release/QuickShot \
+    -output dist/QuickShot-universal
 
 # --- build .icns -----------------------------------------------------------
 echo "==> iconset → .icns"
-ICONSET="dist/quickshot.iconset"
+ICONSET="dist/QuickShot.iconset"
 rm -rf "$ICONSET"
 mkdir -p "$ICONSET"
 for sz in 16 32 64 128 256 512 1024; do
@@ -72,17 +72,17 @@ for sz in 16 32 128 256 512; do
     dbl=$((sz * 2))
     sips -z "$dbl" "$dbl" assets/app-icon.png --out "$ICONSET/icon_${sz}x${sz}@2x.png" >/dev/null
 done
-iconutil -c icns -o dist/quickshot.icns "$ICONSET"
+iconutil -c icns -o dist/QuickShot.icns "$ICONSET"
 rm -rf "$ICONSET"
 
 # --- assemble .app --------------------------------------------------------
-APP="dist/quickshot.app"
+APP="dist/QuickShot.app"
 echo "==> assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp dist/quickshot-universal "$APP/Contents/MacOS/quickshot"
-chmod +x "$APP/Contents/MacOS/quickshot"
-cp dist/quickshot.icns "$APP/Contents/Resources/quickshot.icns"
+cp dist/QuickShot-universal "$APP/Contents/MacOS/QuickShot"
+chmod +x "$APP/Contents/MacOS/QuickShot"
+cp dist/QuickShot.icns "$APP/Contents/Resources/QuickShot.icns"
 
 sed -e "s/{{VERSION}}/$VERSION/g" -e "s|{{BUNDLE_ID}}|$BUNDLE_ID|g" \
     scripts/Info.plist.in > "$APP/Contents/Info.plist"
@@ -94,7 +94,7 @@ codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
 codesign --verify --verbose=2 "$APP"
 
 # --- DMG -------------------------------------------------------------------
-DMG="dist/quickshot-$VERSION.dmg"
+DMG="dist/QuickShot-$VERSION.dmg"
 echo ""
 echo "==> creating $DMG"
 rm -f "$DMG"
@@ -106,7 +106,7 @@ cp -R "$APP" "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
 
 hdiutil create \
-    -volname "quickshot" \
+    -volname "QuickShot" \
     -srcfolder "$STAGING" \
     -ov \
     -format UDZO \
@@ -115,7 +115,7 @@ hdiutil create \
 rm -rf "$STAGING"
 
 # --- cleanup ---------------------------------------------------------------
-rm -f dist/quickshot-universal dist/quickshot.icns
+rm -f dist/QuickShot-universal dist/QuickShot.icns
 
 # --- report ----------------------------------------------------------------
 echo ""

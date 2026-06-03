@@ -167,7 +167,7 @@ impl Overlay {
                 monitor_geom.y as f64,
             ));
             let attrs = WindowAttributes::default()
-                .with_title("quickshot overlay")
+                .with_title("QuickShot overlay")
                 .with_decorations(false)
                 .with_resizable(false)
                 .with_inner_size(size)
@@ -218,7 +218,7 @@ impl Overlay {
             let position = winit::dpi::PhysicalPosition::new(monitor_geom.x, monitor_geom.y);
             let size = winit::dpi::PhysicalSize::new(monitor_geom.width, monitor_geom.height);
             let attrs = WindowAttributes::default()
-                .with_title("quickshot overlay")
+                .with_title("QuickShot overlay")
                 .with_decorations(false)
                 .with_resizable(false)
                 .with_visible(false)
@@ -1246,7 +1246,7 @@ fn ensure_nswindow_can_become_key() {
                 crate::macos_objc::objc_getClass(c"NSWindow".as_ptr().cast());
             if ns_window_class.is_null() {
                 eprintln!(
-                    "quickshot: NSWindow class not found; can't swizzle canBecomeKeyWindow"
+                    "QuickShot: NSWindow class not found; can't swizzle canBecomeKeyWindow"
                 );
                 return;
             }
@@ -1262,7 +1262,7 @@ fn ensure_nswindow_can_become_key() {
                 imp_ptr,
                 c"c@:".as_ptr().cast(),
             );
-            eprintln!("quickshot: swizzled NSWindow.canBecomeKeyWindow -> YES");
+            eprintln!("QuickShot: swizzled NSWindow.canBecomeKeyWindow -> YES");
         }
     });
 }
@@ -1335,7 +1335,7 @@ fn log_macos_window_level(window: &Window) {
         let level = msg_send_int(ns_window, sel(c"level"));
         let behavior = msg_send_uint(ns_window, sel(c"collectionBehavior"));
         eprintln!(
-            "quickshot: overlay NSWindow level={level} collectionBehavior={behavior:#x}"
+            "QuickShot: overlay NSWindow level={level} collectionBehavior={behavior:#x}"
         );
     }
 }

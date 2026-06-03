@@ -10,12 +10,12 @@ pub fn preflight() -> Result<()> {
     }
 
     eprintln!(
-        "\nquickshot needs Screen Recording permission to work on macOS.\n\n\
+        "\nQuickShot needs Screen Recording permission to work on macOS.\n\n\
          1. Open System Settings → Privacy & Security → Screen Recording\n\
-         2. Enable `quickshot` (or the terminal running it) in the list\n\
-         3. Relaunch quickshot\n\n\
+         2. Enable `QuickShot` (or the terminal running it) in the list\n\
+         3. Relaunch QuickShot\n\n\
          You can trigger the system prompt now by pressing Enter (this will\n\
-         also exit quickshot so you can grant permission and restart).\n"
+         also exit QuickShot so you can grant permission and restart).\n"
     );
     let _ = access.request();
     std::process::exit(2);

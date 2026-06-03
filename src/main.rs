@@ -24,12 +24,12 @@ use winit::event_loop::EventLoop;
 fn main() {
     if let Err(e) = run() {
         let msg = format!("{e:#}");
-        eprintln!("quickshot: {msg}");
+        eprintln!("QuickShot: {msg}");
         #[cfg(target_os = "windows")]
         {
             let _ = rfd::MessageDialog::new()
-                .set_title("quickshot")
-                .set_description(format!("quickshot failed to start:\n\n{msg}"))
+                .set_title("QuickShot")
+                .set_description(format!("QuickShot failed to start:\n\n{msg}"))
                 .set_level(rfd::MessageLevel::Error)
                 .show();
         }
@@ -71,7 +71,7 @@ fn run() -> Result<()> {
     )?;
 
     println!(
-        "quickshot running; {} (region), {} (fullscreen). Quit via tray.",
+        "QuickShot running; {} (region), {} (fullscreen). Quit via tray.",
         config.hotkey.region.raw, config.hotkey.fullscreen.raw
     );
 
@@ -110,14 +110,14 @@ fn spawn_config_watcher(proxy: winit::event_loop::EventLoopProxy<app::UserEvent>
 
 fn print_usage() {
     println!(
-        "quickshot \u{2014} small fast screenshot daemon\n\
+        "QuickShot \u{2014} small fast screenshot daemon\n\
          \n\
          USAGE:\n\
-             quickshot                       run the daemon (default)\n\
-             quickshot --install-autostart   install LaunchAgent (macOS)\n\
-             quickshot --uninstall-autostart remove LaunchAgent (macOS)\n\
-             quickshot --help                show this message\n\
+             QuickShot                       run the daemon (default)\n\
+             QuickShot --install-autostart   install LaunchAgent (macOS)\n\
+             QuickShot --uninstall-autostart remove LaunchAgent (macOS)\n\
+             QuickShot --help                show this message\n\
          \n\
-         Config: ~/.config/quickshot/config.toml\n"
+         Config: ~/.config/QuickShot/config.toml\n"
     );
 }

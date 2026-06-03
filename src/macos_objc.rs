@@ -1,4 +1,4 @@
-//! Minimal Objective-C runtime bindings for the few selectors quickshot needs.
+//! Minimal Objective-C runtime bindings for the few selectors QuickShot needs.
 //!
 //! Why this exists: the obvious `extern "C" { fn objc_msgSend(..., ...) -> *mut c_void; }`
 //! variadic declaration is **broken on Apple arm64**. The Darwin variadic ABI

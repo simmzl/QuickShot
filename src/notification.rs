@@ -7,7 +7,7 @@ use notify_rust::Notification;
 /// aborting the capture flow.
 pub fn screenshot_copied(width: u32, height: u32) -> Result<()> {
     Notification::new()
-        .appname("quickshot")
+        .appname("QuickShot")
         .summary("Screenshot copied")
         .body(&format!("{} \u{00D7} {}", width, height))
         .show()
