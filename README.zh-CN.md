@@ -6,7 +6,7 @@
 
 <p align="center">
   小巧、快速的截图守护进程，支持 <b>macOS</b> 与 <b>Windows</b>。<br>
-  纯 Rust 实现 · 二进制约 2–3 MB · 常驻系统托盘。
+  纯 Rust 实现 · 二进制约 1–2 MB · 常驻系统托盘。
 </p>
 
 <p align="center">
@@ -42,8 +42,8 @@
 
 | 平台 | 架构 | 下载 | 二进制体积 |
 |---|---|---|---|
-| **macOS** 11+ | Universal（x86_64 + Apple Silicon） | `.dmg` | ~3.2 MB |
-| **Windows** 10 / 11 | x64（MSVC） | `.zip` | ~2.1 MB |
+| **macOS** 11+ | Universal（x86_64 + Apple Silicon） | `.dmg` | ~2 MB |
+| **Windows** 10 / 11 | x64（MSVC） | `.zip` | ~1 MB |
 
 每个 [GitHub Release](https://github.com/simmzl/QuickShot/releases/latest) 都附带预编译产物。
 
@@ -177,7 +177,7 @@ reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v QuickShot /f
 cargo build --release
 ```
 
-产物在 `target/release/QuickShot[.exe]`。Release 配置已针对体积优化（`opt-level="z"`、`lto=true`、`codegen-units=1`、`strip=true`、`panic="abort"`）：macOS 通用二进制约 3.2 MB，Windows 二进制约 2.1 MB。
+产物在 `target/release/QuickShot[.exe]`。Release 配置已针对体积优化（`opt-level="z"`、`lto=true`、`codegen-units=1`、`strip=true`、`panic="abort"`）：macOS 通用二进制约 2 MB，Windows 二进制约 1 MB。
 
 Windows 端构建还需要 MSVC 链接器 (`link.exe`)。请安装 **Visual Studio Build Tools** 并勾选 **使用 C++ 的桌面开发** 工作负载；或者在调用 `cargo` 之前先用 `vcvars64.bat` 初始化 MSVC 环境。Windows 的 `.exe` 图标在构建时由 `build.rs` 从 `assets/app-icon.ico` 嵌入。
 

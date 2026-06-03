@@ -6,7 +6,7 @@
 
 <p align="center">
   Small, fast screenshot daemon for <b>macOS</b> &amp; <b>Windows</b>.<br>
-  Pure Rust · ~2–3 MB binary · lives in the system tray.
+  Pure Rust · ~1–2 MB binary · lives in the system tray.
 </p>
 
 <p align="center">
@@ -42,8 +42,8 @@
 
 | Platform | Architecture | Download | Binary size |
 |---|---|---|---|
-| **macOS** 11+ | Universal (x86_64 + Apple Silicon) | `.dmg` | ~3.2 MB |
-| **Windows** 10 / 11 | x64 (MSVC) | `.zip` | ~2.1 MB |
+| **macOS** 11+ | Universal (x86_64 + Apple Silicon) | `.dmg` | ~2 MB |
+| **Windows** 10 / 11 | x64 (MSVC) | `.zip` | ~1 MB |
 
 Pre-built binaries are attached to every [GitHub Release](https://github.com/simmzl/QuickShot/releases/latest).
 
@@ -177,7 +177,7 @@ Requires Rust stable (1.75+).
 cargo build --release
 ```
 
-Binary lands at `target/release/QuickShot[.exe]`. The release profile is size-optimized (`opt-level="z"`, `lto=true`, `codegen-units=1`, `strip=true`, `panic="abort"`); the macOS universal binary is ~3.2 MB, the Windows binary ~2.1 MB.
+Binary lands at `target/release/QuickShot[.exe]`. The release profile is size-optimized (`opt-level="z"`, `lto=true`, `codegen-units=1`, `strip=true`, `panic="abort"`); the macOS universal binary is ~2 MB, the Windows binary ~1 MB.
 
 Windows builds also require the MSVC linker (`link.exe`). Install **Visual Studio Build Tools** with the **Desktop development with C++** workload, or set up the MSVC env via `vcvars64.bat` before invoking `cargo`. The Windows `.exe` icon is embedded at build time from `assets/app-icon.ico` via `build.rs`.
 
