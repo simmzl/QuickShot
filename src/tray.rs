@@ -29,7 +29,20 @@ impl TrayGuard {
     }
 }
 
+// macOS uses a template image (black on transparent, auto-tinted by the
+// system to match the menu-bar theme). Windows/Linux trays don't support
+// template images, so a pure-black icon would be near-invisible on dark
+// taskbars — use a full-color icon there instead.
+#[cfg(target_os = "macos")]
 const ICON_BYTES: &[u8] = include_bytes!("../assets/tray-icon.png");
+#[cfg(not(target_os = "macos"))]
+const ICON_BYTES: &[u8] = include_bytes!("../assets/windows-tray-icon.png");
+
+/// Whether the tray icon should be treated as a macOS template image.
+#[cfg(target_os = "macos")]
+const ICON_AS_TEMPLATE: bool = true;
+#[cfg(not(target_os = "macos"))]
+const ICON_AS_TEMPLATE: bool = false;
 
 const ID_REGION: &str = "capture-region";
 const ID_SCREEN: &str = "capture-screen";
@@ -91,13 +104,14 @@ pub fn install(
     menu.append(&MenuItem::with_id(ID_QUIT, "Quit", true, None))
         .context("append Quit menu item")?;
 
-    // Template image: macOS auto-inverts non-transparent pixels based on
-    // menu-bar theme (black in light mode, white in dark mode). This is how
-    // system tray icons (WiFi, battery, etc.) stay visible in both themes.
+    // Template image (macOS only): the system auto-inverts non-transparent
+    // pixels based on menu-bar theme (black in light mode, white in dark
+    // mode), the way WiFi/battery icons stay visible in both themes. On
+    // Windows/Linux this is false and we ship a full-color icon instead.
     let tray = TrayIconBuilder::new()
         .with_tooltip("quickshot")
         .with_icon(icon)
-        .with_icon_as_template(true)
+        .with_icon_as_template(ICON_AS_TEMPLATE)
         .with_menu(Box::new(menu))
         .build()
         .context("build tray icon")?;
