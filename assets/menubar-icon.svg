@@ -1,0 +1,12 @@
+<svg width="44" height="44" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- macOS template image: pure black on transparent, system auto-tints -->
+  <g stroke="#000000" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- top-left corner -->
+    <path d="M12 18 V13 a2 2 0 0 1 2 -2 H19"/>
+    <!-- bottom-right corner -->
+    <path d="M25 33 H30 a2 2 0 0 0 2 -2 V26"/>
+  </g>
+  <!-- lightning bolt (lucide "zap" geometry) -->
+  <path d="M22.79 10.5 L14.91 23.1 H22 L21.21 31.5 L29.09 18.9 H22 Z"
+        fill="#000000" stroke="#000000" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

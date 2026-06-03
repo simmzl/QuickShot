@@ -1,0 +1,16 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background: dark rounded square -->
+  <rect x="112" y="112" width="800" height="800" rx="200" fill="#000000"/>
+
+  <!-- Corner brackets (viewfinder / capture frame) -->
+  <g stroke="#FFFFFF" stroke-width="36" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- top-left -->
+    <path d="M280 380 V312 a32 32 0 0 1 32 -32 H380"/>
+    <!-- bottom-right -->
+    <path d="M644 744 H712 a32 32 0 0 0 32 -32 V644"/>
+  </g>
+
+  <!-- Lightning bolt (lucide "zap" geometry, sharp with slight rounding) -->
+  <path d="M526 312 L384 550 H512 L498 702 L640 474 H512 Z"
+        fill="#FF6B35" stroke="#FF6B35" stroke-width="20" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>
