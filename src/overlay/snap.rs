@@ -261,10 +261,13 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "macos")]
+    #[ignore = "requires a desktop session with at least one user window; \
+                unavailable on headless CI runners"]
     fn enumerate_windows_returns_some_windows_on_macos() {
         // On any Mac running this test there should be at least one user
         // window (Finder, Terminal, IDE…). Smoke test only — exact contents
-        // depend on the test machine.
+        // depend on the test machine. Ignored in CI: headless runners expose
+        // only system UI (Dock, Menubar…), which the layer filter drops.
         let geom = MonitorGeom { x: 0, y: 0, width: 1920, height: 1080 };
         let entries = enumerate_windows(&geom, std::process::id(), 1.0);
         assert!(
