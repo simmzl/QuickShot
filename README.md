@@ -1,26 +1,53 @@
-# QuickShot
+<p align="center">
+  <img src="assets/logo.svg" width="120" alt="QuickShot logo">
+</p>
 
-Small, fast screenshot daemon for **macOS** and **Windows**. Pure Rust, ~2-3 MB binary, lives in the system tray.
+<h1 align="center">QuickShot</h1>
 
-[![Release](https://img.shields.io/github/v/release/simmzl/QuickShot)](https://github.com/simmzl/QuickShot/releases/latest)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+<p align="center">
+  Small, fast screenshot daemon for <b>macOS</b> &amp; <b>Windows</b>.<br>
+  Pure Rust · ~2–3 MB binary · lives in the system tray.
+</p>
 
-> English | [简体中文](README.zh-CN.md)
+<p align="center">
+  <a href="https://github.com/simmzl/QuickShot/releases/latest"><img src="https://img.shields.io/github/v/release/simmzl/QuickShot?color=ff6b35&label=release" alt="Release"></a>
+  <a href="https://github.com/simmzl/QuickShot/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/simmzl/QuickShot/release.yml?label=build" alt="Build"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue" alt="Platforms">
+  <img src="https://img.shields.io/badge/built_with-Rust-orange?logo=rust&logoColor=white" alt="Built with Rust">
+  <a href="https://github.com/simmzl/QuickShot/releases"><img src="https://img.shields.io/github/downloads/simmzl/QuickShot/total?color=brightgreen" alt="Downloads"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green" alt="License"></a>
+</p>
+
+<p align="center">
+  <b>English</b> · <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<!-- Demo: drop a screenshot or GIF here once you have one, e.g.
+<p align="center"><img src="assets/demo.gif" width="720" alt="QuickShot demo"></p>
+-->
 
 ## Features
 
-- **Region + fullscreen capture** through configurable global hotkeys.
-- **Drag → anchor-adjust → confirm** flow; `Esc` cancels at any point.
-- **Annotation tools**: Arrow, Rectangle, Ellipse, Mosaic, Pen, Text, Move — plus undo / redo.
-- **Mini toolbar** under the selection: switch tool, pin the result as a floating preview, or save-as PNG.
-- **4× magnifier** with crosshair, hex / coord readout, and live W × H size label during selection.
-- **System tray**: Capture Region / Screen, Edit Config, Start at Login, Quit.
-- **PNG save-to-disk** with templated filenames (date / time / dimensions / mode placeholders).
-- **Live config reload** — edits to `config.toml` are applied within 1 second; hotkeys and tray labels refresh in place, no restart required.
+- 📸 **Region + fullscreen capture** through configurable global hotkeys.
+- 🎯 **Drag → anchor-adjust → confirm** flow; `Esc` cancels at any point.
+- ✏️ **Annotation tools**: Arrow, Rectangle, Ellipse, Mosaic, Pen, Text, Move — plus undo / redo.
+- 🧰 **Mini toolbar** under the selection: switch tool, pin the result as a floating preview, or save-as PNG.
+- 🔍 **4× magnifier** with crosshair, hex / coord readout, and live W × H size label during selection.
+- 🧲 **Smart window snap** — hover to highlight and snap the selection to a window's bounds.
+- 🗂️ **System tray**: Capture Region / Screen, Edit Config, Start at Login, Quit.
+- 💾 **PNG save-to-disk** with templated filenames (date / time / dimensions / mode placeholders).
+- ♻️ **Live config reload** — edits to `config.toml` apply within 1 second; hotkeys and tray labels refresh in place, no restart required.
+
+## Platforms
+
+| Platform | Architecture | Download | Binary size |
+|---|---|---|---|
+| **macOS** 11+ | Universal (x86_64 + Apple Silicon) | `.dmg` | ~3.2 MB |
+| **Windows** 10 / 11 | x64 (MSVC) | `.zip` | ~2.1 MB |
+
+Pre-built binaries are attached to every [GitHub Release](https://github.com/simmzl/QuickShot/releases/latest).
 
 ## Install
-
-Pre-built binaries are attached to each [GitHub Release](https://github.com/simmzl/QuickShot/releases/latest).
 
 ### macOS
 
@@ -152,7 +179,7 @@ cargo build --release
 
 Binary lands at `target/release/QuickShot[.exe]`. The release profile is size-optimized (`opt-level="z"`, `lto=true`, `codegen-units=1`, `strip=true`, `panic="abort"`); the macOS universal binary is ~3.2 MB, the Windows binary ~2.1 MB.
 
-Windows builds also require the MSVC linker (`link.exe`). Install **Visual Studio Build Tools** with the **Desktop development with C++** workload, or set up the MSVC env via `vcvars64.bat` before invoking `cargo`.
+Windows builds also require the MSVC linker (`link.exe`). Install **Visual Studio Build Tools** with the **Desktop development with C++** workload, or set up the MSVC env via `vcvars64.bat` before invoking `cargo`. The Windows `.exe` icon is embedded at build time from `assets/app-icon.ico` via `build.rs`.
 
 ### Packaging
 
@@ -166,21 +193,9 @@ macOS env overrides for `package.sh`:
 - `BUNDLE_ID` (default `com.QuickShot.app`)
 - `SIGN_IDENTITY` (default `-` for ad-hoc; pass an Apple Developer ID identity string for full signing)
 
-### Release CI
+### Releasing
 
-Pushing a `v*` git tag triggers [`.github/workflows/release.yml`](.github/workflows/release.yml):
-
-1. `build-macos` (runs on `macos-latest`) and `build-windows` (runs on `windows-latest`) execute in parallel — each runs `cargo test`, packages its artifact, and uploads it.
-2. The `release` job downloads both artifacts and publishes a single GitHub Release containing the dmg and the zip.
-
-To cut a release:
-
-```
-# 1. Bump version in Cargo.toml, commit.
-# 2. Tag and push.
-git tag v1.2.3
-git push origin master v1.2.3
-```
+Pushing a `v*` git tag triggers [`.github/workflows/release.yml`](.github/workflows/release.yml), which builds both platforms and publishes a single GitHub Release. Artifact names come from `Cargo.toml`'s version, so bump it first — see **[RELEASING.md](RELEASING.md)** for the full step-by-step.
 
 ## Uninstall
 

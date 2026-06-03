@@ -1,26 +1,53 @@
-# QuickShot
+<p align="center">
+  <img src="assets/logo.svg" width="120" alt="QuickShot logo">
+</p>
 
-小巧、快速的截图守护进程，支持 **macOS** 与 **Windows**。纯 Rust 实现，二进制约 2-3 MB，常驻系统托盘。
+<h1 align="center">QuickShot</h1>
 
-[![Release](https://img.shields.io/github/v/release/simmzl/QuickShot)](https://github.com/simmzl/QuickShot/releases/latest)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#许可证)
+<p align="center">
+  小巧、快速的截图守护进程，支持 <b>macOS</b> 与 <b>Windows</b>。<br>
+  纯 Rust 实现 · 二进制约 2–3 MB · 常驻系统托盘。
+</p>
 
-> [English](README.md) | 简体中文
+<p align="center">
+  <a href="https://github.com/simmzl/QuickShot/releases/latest"><img src="https://img.shields.io/github/v/release/simmzl/QuickShot?color=ff6b35&label=release" alt="Release"></a>
+  <a href="https://github.com/simmzl/QuickShot/actions/workflows/release.yml"><img src="https://img.shields.io/github/actions/workflow/status/simmzl/QuickShot/release.yml?label=build" alt="Build"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue" alt="Platforms">
+  <img src="https://img.shields.io/badge/built_with-Rust-orange?logo=rust&logoColor=white" alt="Built with Rust">
+  <a href="https://github.com/simmzl/QuickShot/releases"><img src="https://img.shields.io/github/downloads/simmzl/QuickShot/total?color=brightgreen" alt="Downloads"></a>
+  <a href="#许可证"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green" alt="License"></a>
+</p>
+
+<p align="center">
+  <a href="README.md">English</a> · <b>简体中文</b>
+</p>
+
+<!-- 演示：有截图或 GIF 后放在这里，例如
+<p align="center"><img src="assets/demo.gif" width="720" alt="QuickShot 演示"></p>
+-->
 
 ## 功能特性
 
-- **区域截图 + 全屏截图**，全局快捷键可配置。
-- **拖拽 → 锚点调整 → 确认** 流程，任意阶段可按 `Esc` 取消。
-- **标注工具**：箭头、矩形、椭圆、马赛克、画笔、文字、移动 —— 支持撤销 / 重做。
-- **选区下浮动工具栏**：切换工具，可将选区固定为悬浮预览，或另存为 PNG。
-- **4× 放大镜**：拖拽时显示十字准线、HEX 色值 / 坐标、实时 W × H 尺寸标签。
-- **系统托盘菜单**：区域截图 / 全屏截图、编辑配置、开机自启、退出。
-- **PNG 自动保存**，文件名支持日期 / 时间 / 尺寸 / 模式占位符。
-- **配置热重载** —— 编辑 `config.toml` 保存后 1 秒内自动生效，快捷键和托盘标签实时刷新，无需重启。
+- 📸 **区域截图 + 全屏截图**，全局快捷键可配置。
+- 🎯 **拖拽 → 锚点调整 → 确认** 流程，任意阶段可按 `Esc` 取消。
+- ✏️ **标注工具**：箭头、矩形、椭圆、马赛克、画笔、文字、移动 —— 支持撤销 / 重做。
+- 🧰 **选区下浮动工具栏**：切换工具，可将选区固定为悬浮预览，或另存为 PNG。
+- 🔍 **4× 放大镜**：拖拽时显示十字准线、HEX 色值 / 坐标、实时 W × H 尺寸标签。
+- 🧲 **智能窗口吸附** —— 悬停高亮并将选区吸附到某个窗口的边界。
+- 🗂️ **系统托盘菜单**：区域截图 / 全屏截图、编辑配置、开机自启、退出。
+- 💾 **PNG 自动保存**，文件名支持日期 / 时间 / 尺寸 / 模式占位符。
+- ♻️ **配置热重载** —— 编辑 `config.toml` 保存后 1 秒内自动生效，快捷键和托盘标签实时刷新，无需重启。
 
-## 安装
+## 支持平台
+
+| 平台 | 架构 | 下载 | 二进制体积 |
+|---|---|---|---|
+| **macOS** 11+ | Universal（x86_64 + Apple Silicon） | `.dmg` | ~3.2 MB |
+| **Windows** 10 / 11 | x64（MSVC） | `.zip` | ~2.1 MB |
 
 每个 [GitHub Release](https://github.com/simmzl/QuickShot/releases/latest) 都附带预编译产物。
+
+## 安装
 
 ### macOS
 
@@ -152,7 +179,7 @@ cargo build --release
 
 产物在 `target/release/QuickShot[.exe]`。Release 配置已针对体积优化（`opt-level="z"`、`lto=true`、`codegen-units=1`、`strip=true`、`panic="abort"`）：macOS 通用二进制约 3.2 MB，Windows 二进制约 2.1 MB。
 
-Windows 端构建还需要 MSVC 链接器 (`link.exe`)。请安装 **Visual Studio Build Tools** 并勾选 **使用 C++ 的桌面开发** 工作负载；或者在调用 `cargo` 之前先用 `vcvars64.bat` 初始化 MSVC 环境。
+Windows 端构建还需要 MSVC 链接器 (`link.exe`)。请安装 **Visual Studio Build Tools** 并勾选 **使用 C++ 的桌面开发** 工作负载；或者在调用 `cargo` 之前先用 `vcvars64.bat` 初始化 MSVC 环境。Windows 的 `.exe` 图标在构建时由 `build.rs` 从 `assets/app-icon.ico` 嵌入。
 
 ### 打包
 
@@ -166,21 +193,9 @@ macOS 端 `package.sh` 支持的环境变量：
 - `BUNDLE_ID`（默认 `com.QuickShot.app`）
 - `SIGN_IDENTITY`（默认 `-` 即 ad-hoc 签名；传入 Apple Developer ID 字符串可做完整签名）
 
-### Release CI
+### 发版
 
-推送 `v*` 形式的 git tag 会触发 [`.github/workflows/release.yml`](.github/workflows/release.yml)：
-
-1. `build-macos`（运行于 `macos-latest`）和 `build-windows`（运行于 `windows-latest`）并行执行，各自跑 `cargo test`、打包、上传 artifact。
-2. `release` job 下载两个 artifact，发布单个 GitHub Release（同时包含 dmg 和 zip）。
-
-发版命令：
-
-```
-# 1. 在 Cargo.toml 中升级版本号，提交。
-# 2. 打 tag 并推送。
-git tag v1.2.3
-git push origin master v1.2.3
-```
+推送 `v*` 形式的 git tag 会触发 [`.github/workflows/release.yml`](.github/workflows/release.yml)，并行构建两个平台并发布单个 GitHub Release。产物名取自 `Cargo.toml` 的版本号，所以**发版前要先升级它** —— 完整步骤见 **[RELEASING.md](RELEASING.md)**。
 
 ## 卸载
 
