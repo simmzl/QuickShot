@@ -12,6 +12,11 @@ jobs:
   # ---------------- macOS: universal .app + .dmg ----------------
   build-macos:
     runs-on: macos-latest
+    # Scope signing secrets to the `release` environment. Create it under
+    # Settings → Environments and (optionally) add protection rules — required
+    # reviewers / "selected tags only" — to gate access to the private cert.
+    # Repo-level secrets are also inherited, so plain repo secrets work too.
+    environment: release
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,6 +41,49 @@ jobs:
       - name: Run test suite
         run: cargo test
 
+      # Import the Apple signing cert into an ephemeral keychain. Degrades to
+      # ad-hoc signing when the secret is absent (forks, or before secrets are
+      # configured), so the build never hard-fails on a missing cert. The
+      # private key is decoded only inside the runner and deleted immediately;
+      # the identity is exported as its SHA-1 hash (not the CN) and masked so
+      # the signer's name/email never lands in the public build log.
+      - name: Import signing certificate (if configured)
+        env:
+          MAC_CERT_P12_BASE64: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MAC_CERT_P12_BASE64:-}" ]; then
+            echo "No signing cert configured — packaging will use ad-hoc signing."
+            exit 0
+          fi
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+          printf '%s' "$MAC_CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$MAC_CERT_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          # Put the ephemeral keychain first in the search list so codesign
+          # resolves the identity, keeping the login/system keychains after it.
+          security list-keychains -d user -s "$KEYCHAIN_PATH" \
+            $(security list-keychains -d user | sed 's/["]//g')
+          rm -f "$CERT_PATH"
+          IDENTITY_HASH=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | awk '/[0-9]+\)/{print $2; exit}')
+          if [ -z "$IDENTITY_HASH" ]; then
+            echo "::error::cert imported but no codesigning identity found"
+            exit 1
+          fi
+          echo "::add-mask::$IDENTITY_HASH"
+          echo "SIGN_IDENTITY=$IDENTITY_HASH" >> "$GITHUB_ENV"
+          echo "SIGNING_KEYCHAIN=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "Imported signing identity into ephemeral keychain."
+
       - name: Package .app + .dmg
         run: bash scripts/package.sh
 
@@ -51,6 +99,15 @@ jobs:
           name: macos-dmg
           path: dist/QuickShot-*.dmg
           if-no-files-found: error
+
+      # Always tear down the ephemeral signing keychain, even on failure, so no
+      # imported private key lingers on the runner.
+      - name: Clean up signing keychain
+        if: ${{ always() }}
+        run: |
+          if [ -n "${SIGNING_KEYCHAIN:-}" ]; then
+            security delete-keychain "$SIGNING_KEYCHAIN" || true
+          fi
 
   # ---------------- Windows: MSVC .exe + .zip ----------------
   build-windows:

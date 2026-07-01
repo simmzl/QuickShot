@@ -2,3 +2,9 @@
 .DS_Store
 /.worktrees
 /dist
+
+# Never commit signing material (QuickShot is a public repo).
+*.p12
+*.env
+*.keychain
+*.keychain-db

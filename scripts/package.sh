@@ -89,8 +89,20 @@ sed -e "s/{{VERSION}}/$VERSION/g" -e "s|{{BUNDLE_ID}}|$BUNDLE_ID|g" \
 plutil -lint "$APP/Contents/Info.plist"
 
 # --- codesign --------------------------------------------------------------
-echo "==> codesigning with identity: $SIGN_IDENTITY"
-codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
+# Default (SIGN_IDENTITY="-") is ad-hoc: unchanged behavior, no secrets needed.
+# A real identity (passed via env, e.g. from the CI ephemeral keychain) enables
+# hardened runtime + entitlements and signs the inner binary before the bundle.
+if [ "$SIGN_IDENTITY" = "-" ]; then
+    echo "==> codesigning ad-hoc"
+    codesign --force --deep --sign "-" "$APP"
+else
+    echo "==> codesigning with real identity (value hidden)"
+    ENTITLEMENTS="scripts/entitlements.mac.plist"
+    codesign --force --options runtime --entitlements "$ENTITLEMENTS" \
+        --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/QuickShot"
+    codesign --force --options runtime --entitlements "$ENTITLEMENTS" \
+        --timestamp --sign "$SIGN_IDENTITY" "$APP"
+fi
 codesign --verify --verbose=2 "$APP"
 
 # --- DMG -------------------------------------------------------------------

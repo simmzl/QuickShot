@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for QuickShot's real-identity signing path
+  (scripts/package.sh with SIGN_IDENTITY != "-").
+
+  QuickShot is a plain Rust binary: no JIT, no dynamically loaded third-party
+  dylibs (system frameworks are Apple-signed; Rust deps are statically linked),
+  so it needs no relaxations — an empty entitlement set is correct and keeps the
+  signature notarization-ready. Add keys here only if a future feature requires
+  them. Screen Recording is a TCC permission granted at runtime, NOT an
+  entitlement, so it does not belong in this file.
+-->
+<plist version="1.0">
+<dict>
+</dict>
+</plist>
