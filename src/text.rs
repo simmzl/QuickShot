@@ -31,7 +31,7 @@ impl Font {
     /// chars and sums `advance_width` from freshly-computed metrics. Returns
     /// 0.0 if both the embedded primary and CJK fallback fonts failed to load.
     ///
-    /// The `&mut self` receiver is for API consistency with `rasterize`/
+    /// The `&mut self` receiver is for API consistency with `ensure_glyph`/
     /// `render_text` — internally this only calls `fontdue::Font::metrics`
     /// (`&self`), so no caching mutation actually happens here.
     pub fn measure_text_width(&mut self, text: &str, px_size: f32) -> f32 {
@@ -40,7 +40,7 @@ impl Font {
         }
         let mut w = 0.0_f32;
         for ch in text.chars() {
-            // Mirror the font-selection logic in `rasterize`: try primary
+            // Mirror the font-selection logic in `ensure_glyph`: try primary
             // first if it has the glyph, then CJK fallback. If neither has
             // it, advance by an em-half (matches the empty-bitmap branch in
             // `render_text`).
@@ -62,15 +62,19 @@ impl Font {
         w
     }
 
-    fn rasterize(
-        &mut self,
-        ch: char,
-        px_size: f32,
-    ) -> Option<&(fontdue::Metrics, Vec<u8>)> {
+    /// Ensure the glyph for `ch` at `px_size` is rasterized into `self.cache`
+    /// and return its cache key `(ch, px_size_tenths)`. This is the hot-path
+    /// entry point: callers take a `&mut self` borrow here to populate the
+    /// cache, then drop it and re-borrow `&self.cache` immutably to read the
+    /// glyph by key — avoiding any per-frame clone of the bitmap `Vec<u8>`.
+    ///
+    /// Insertion logic mirrors the original three-branch selection:
+    /// primary → CJK fallback → empty placeholder.
+    fn ensure_glyph(&mut self, ch: char, px_size: f32) -> (char, u32) {
         let key = (ch, (px_size * 10.0) as u32);
 
         if self.cache.contains_key(&key) {
-            return self.cache.get(&key);
+            return key;
         }
 
         // Primary path: only use if the font actually has this glyph.
@@ -81,7 +85,7 @@ impl Font {
             if font.lookup_glyph_index(ch) != 0 {
                 let (m, b) = font.rasterize(ch, px_size);
                 self.cache.insert(key, (m, b));
-                return self.cache.get(&key);
+                return key;
             }
         }
 
@@ -90,7 +94,7 @@ impl Font {
             if font.lookup_glyph_index(ch) != 0 {
                 let (m, b) = font.rasterize(ch, px_size);
                 self.cache.insert(key, (m, b));
-                return self.cache.get(&key);
+                return key;
             }
         }
 
@@ -107,7 +111,7 @@ impl Font {
             },
             Vec::new(),
         ));
-        self.cache.get(&key)
+        key
     }
 
     /// Draw `text` into the softbuffer `buf` (0x00RRGGBB per pixel) at pen
@@ -138,7 +142,13 @@ impl Font {
         );
         let mut pen_x = x as f32;
         for ch in text.chars() {
-            let Some((metrics, bitmap)) = self.rasterize(ch, px_size).cloned() else {
+            // Populate the cache under a short-lived `&mut self` borrow, then
+            // read the glyph back through an immutable `&self.cache` borrow.
+            // The immutable borrow is confined to this iteration (all reads
+            // finish before the next loop turn calls `ensure_glyph`), so no
+            // clone is needed and the borrow checker is satisfied.
+            let key = self.ensure_glyph(ch, px_size);
+            let Some((metrics, bitmap)) = self.cache.get(&key) else {
                 continue;
             };
             if bitmap.is_empty() {
@@ -154,7 +164,7 @@ impl Font {
             // of the requested size. Approximate the ascent as px_size * 0.8.
             let ascent = (px_size * 0.8) as i32;
             let gy = y + ascent - metrics.height as i32 - metrics.ymin;
-            blit_glyph(buf, w, h, gx, gy, &metrics, &bitmap, (fr, fg, fb));
+            blit_glyph(buf, w, h, gx, gy, metrics, bitmap, (fr, fg, fb));
             pen_x += metrics.advance_width;
         }
     }
@@ -180,7 +190,11 @@ impl Font {
         let mut pen_x = x as f32;
         let (w, h) = (img.width() as i32, img.height() as i32);
         for ch in text.chars() {
-            let Some((metrics, bitmap)) = self.rasterize(ch, px_size).cloned() else {
+            // Same borrow discipline as `render_text`: `ensure_glyph` mutates
+            // the cache, then we read the glyph back immutably and blit by
+            // reference — zero per-glyph clone.
+            let key = self.ensure_glyph(ch, px_size);
+            let Some((metrics, bitmap)) = self.cache.get(&key) else {
                 continue;
             };
             if bitmap.is_empty() {

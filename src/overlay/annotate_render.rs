@@ -675,6 +675,7 @@ pub fn draw_annotation_on_buf(
     frame: &RgbaImage,
     ann: &Annotation,
     font: &mut crate::text::Font,
+    mosaic_cache: Option<&mut MosaicCache>,
 ) {
     let frame_size = frame.dimensions();
     let window_size = (win_w, win_h);
@@ -708,7 +709,7 @@ pub fn draw_annotation_on_buf(
             draw_ellipse_outline_buf(buf, win_w, win_h, tl, br, style.color.argb(), thickness_win);
         }
         Annotation::Mosaic { rect, block_size } => {
-            apply_mosaic_on_buf(buf, win_w, win_h, frame, *rect, *block_size);
+            apply_mosaic_on_buf(buf, win_w, win_h, frame, *rect, *block_size, mosaic_cache);
         }
         Annotation::Pen { points, style } => {
             draw_pen_on_buf(buf, win_w, win_h, frame, points, *style);
@@ -733,8 +734,10 @@ pub fn draw_pending_on_buf(
     match pending {
         PendingDraw::Shape { .. } => {
             // Reuse finalize → Annotation, then draw. Cheap clone for Shape variants.
+            // No mosaic cache: an in-flight mosaic's rect changes every frame,
+            // so memoizing would only accumulate stale entries.
             if let Some(ann) = pending.clone().finalize() {
-                draw_annotation_on_buf(buf, win_w, win_h, frame, &ann, font);
+                draw_annotation_on_buf(buf, win_w, win_h, frame, &ann, font, None);
             }
         }
         PendingDraw::Pen { points, style } => {
@@ -940,25 +943,28 @@ fn draw_ellipse_outline_buf(
     }
 }
 
-fn apply_mosaic_on_buf(
-    buf: &mut [u32],
-    win_w: u32,
-    win_h: u32,
-    frame: &RgbaImage,
-    rect_frame: Rect,
-    block_size: u32,
-) {
-    if rect_frame.w <= 0 || rect_frame.h <= 0 || block_size == 0 {
-        return;
-    }
-    let frame_size = frame.dimensions();
+/// Averaged ARGB (0x00RRGGBB) per mosaic block, keyed by the mosaic's
+/// frame-space rect + block size. The frame is fixed for the overlay's
+/// lifetime, so these averages are constant for a committed mosaic — we compute
+/// them once and reuse across redraws instead of re-summing the source pixels
+/// (the expensive part) every frame.
+pub type MosaicCache = std::collections::HashMap<(i32, i32, i32, i32, u32), Vec<u32>>;
+
+/// Compute the per-block averaged colors for a mosaic, in row-major block order
+/// (outer `by`, inner `bx`). This is the expensive pass (reads every source
+/// pixel); `paint_mosaic_averages` consumes the result.
+fn compute_mosaic_averages(frame: &RgbaImage, rect_frame: Rect, block_size: u32) -> Vec<u32> {
+    let (iw, ih) = {
+        let (fw, fh) = frame.dimensions();
+        (fw as i32, fh as i32)
+    };
     let bs = block_size as i32;
-    let (iw, ih) = (frame_size.0 as i32, frame_size.1 as i32);
     let x0 = rect_frame.x.max(0);
     let y0 = rect_frame.y.max(0);
     let x1 = (rect_frame.x + rect_frame.w).min(iw);
     let y1 = (rect_frame.y + rect_frame.h).min(ih);
 
+    let mut out = Vec::new();
     let mut by = y0;
     while by < y1 {
         let mut bx = x0;
@@ -976,13 +982,51 @@ fn apply_mosaic_on_buf(
                     count += 1;
                 }
             }
-            if count == 0 {
-                bx += bs;
-                continue;
-            }
-            let avg_argb = ((sum[0] / count) as u32) << 16
-                | ((sum[1] / count) as u32) << 8
-                | ((sum[2] / count) as u32);
+            // count is always ≥ 1 here (block_x1 > bx, block_y1 > by), but stay
+            // defensive to match the original guard's intent.
+            let avg_argb = if count == 0 {
+                0
+            } else {
+                ((sum[0] / count) as u32) << 16
+                    | ((sum[1] / count) as u32) << 8
+                    | ((sum[2] / count) as u32)
+            };
+            out.push(avg_argb);
+            bx += bs;
+        }
+        by += bs;
+    }
+    out
+}
+
+/// Paint precomputed block averages into the softbuffer. Walks the block grid
+/// in the identical order `compute_mosaic_averages` produced, so `averages`
+/// indexes 1:1. Cheap (fills window pixels), so it runs every frame.
+fn paint_mosaic_averages(
+    buf: &mut [u32],
+    win_w: u32,
+    win_h: u32,
+    frame_size: (u32, u32),
+    rect_frame: Rect,
+    block_size: u32,
+    averages: &[u32],
+) {
+    let (iw, ih) = (frame_size.0 as i32, frame_size.1 as i32);
+    let bs = block_size as i32;
+    let x0 = rect_frame.x.max(0);
+    let y0 = rect_frame.y.max(0);
+    let x1 = (rect_frame.x + rect_frame.w).min(iw);
+    let y1 = (rect_frame.y + rect_frame.h).min(ih);
+
+    let mut i = 0usize;
+    let mut by = y0;
+    while by < y1 {
+        let mut bx = x0;
+        while bx < x1 {
+            let block_x1 = (bx + bs).min(x1);
+            let block_y1 = (by + bs).min(y1);
+            let Some(&avg_argb) = averages.get(i) else { return };
+            i += 1;
             let win_tl = frame_to_window((bx, by), frame_size, (win_w, win_h));
             let win_br = frame_to_window(
                 (block_x1 - 1, block_y1 - 1),
@@ -997,6 +1041,47 @@ fn apply_mosaic_on_buf(
             bx += bs;
         }
         by += bs;
+    }
+}
+
+/// `cache: Some(_)` memoizes the block averages (committed mosaics, whose rect
+/// is stable); `None` recomputes fresh (an in-flight mosaic drag, whose rect
+/// changes every frame — caching it would just churn stale entries).
+fn apply_mosaic_on_buf(
+    buf: &mut [u32],
+    win_w: u32,
+    win_h: u32,
+    frame: &RgbaImage,
+    rect_frame: Rect,
+    block_size: u32,
+    cache: Option<&mut MosaicCache>,
+) {
+    if rect_frame.w <= 0 || rect_frame.h <= 0 || block_size == 0 {
+        return;
+    }
+    let frame_size = frame.dimensions();
+    match cache {
+        Some(c) => {
+            let key = (
+                rect_frame.x,
+                rect_frame.y,
+                rect_frame.w,
+                rect_frame.h,
+                block_size,
+            );
+            let averages = c
+                .entry(key)
+                .or_insert_with(|| compute_mosaic_averages(frame, rect_frame, block_size));
+            paint_mosaic_averages(
+                buf, win_w, win_h, frame_size, rect_frame, block_size, averages,
+            );
+        }
+        None => {
+            let averages = compute_mosaic_averages(frame, rect_frame, block_size);
+            paint_mosaic_averages(
+                buf, win_w, win_h, frame_size, rect_frame, block_size, &averages,
+            );
+        }
     }
 }
 
@@ -1023,6 +1108,35 @@ mod tests {
         for px in img.pixels() {
             assert_eq!(px.0, [0, 0, 0, 255]);
         }
+    }
+
+    #[test]
+    fn mosaic_cache_matches_uncached_buf() {
+        // The cached buf path (Some) must be bit-for-bit identical to the
+        // fresh-compute path (None), including on a repeat call that hits the
+        // populated cache.
+        let mut frame = RgbaImage::new(40, 30);
+        for y in 0..30u32 {
+            for x in 0..40u32 {
+                frame.put_pixel(x, y, Rgba([(x * 6) as u8, (y * 8) as u8, (x + y) as u8, 255]));
+            }
+        }
+        let (win_w, win_h) = (40u32, 30u32);
+        let rect = Rect { x: 3, y: 2, w: 25, h: 20 };
+        let block = 7u32;
+
+        let mut uncached = vec![0u32; (win_w * win_h) as usize];
+        apply_mosaic_on_buf(&mut uncached, win_w, win_h, &frame, rect, block, None);
+
+        let mut cache = MosaicCache::new();
+        let mut first = vec![0u32; (win_w * win_h) as usize];
+        apply_mosaic_on_buf(&mut first, win_w, win_h, &frame, rect, block, Some(&mut cache));
+        assert_eq!(uncached, first, "first cached render must match uncached");
+        assert_eq!(cache.len(), 1, "one mosaic key should be memoized");
+
+        let mut second = vec![0u32; (win_w * win_h) as usize];
+        apply_mosaic_on_buf(&mut second, win_w, win_h, &frame, rect, block, Some(&mut cache));
+        assert_eq!(uncached, second, "cache-hit render must match uncached");
     }
 
     #[test]

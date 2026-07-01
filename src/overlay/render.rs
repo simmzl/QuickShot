@@ -45,6 +45,80 @@ pub fn draw_background(buf: &mut [u32], w: u32, h: u32, frame: &RgbaImage) {
     }
 }
 
+/// Precompute the fully-dimmed background once. The overlay's frame never
+/// changes for its lifetime, so we build the swizzled + halved (0x00RRGGBB,
+/// each channel `/ 2`) buffer a single time at `Overlay::create` and memcpy it
+/// every redraw instead of re-deriving it from the RGBA frame per frame.
+///
+/// The values are bit-for-bit identical to running `draw_background` followed
+/// by `apply_dim(.., None)`: swizzle drops each channel to 8 bits, then the
+/// `>> 1` halving matches the old `((px >> shift) & 0xFF) / 2`.
+pub fn precompute_dimmed(frame: &RgbaImage) -> Vec<u32> {
+    let raw = frame.as_raw();
+    let (fw, fh) = frame.dimensions();
+    let mut out = vec![0u32; (fw as usize) * (fh as usize)];
+    for (dst, src) in out.iter_mut().zip(raw.chunks_exact(4)) {
+        let r = (src[0] >> 1) as u32;
+        let g = (src[1] >> 1) as u32;
+        let b = (src[2] >> 1) as u32;
+        *dst = (r << 16) | (g << 8) | b;
+    }
+    out
+}
+
+/// Hot path: paint the dimmed background with the selection region restored to
+/// full brightness. Replaces the per-frame `draw_background` + `apply_dim` pair
+/// with a single `memcpy` of the precomputed `dimmed` buffer plus a bright
+/// re-swizzle of only the selection rect (typically far smaller than the whole
+/// screen). Behavior is identical: everything dimmed, selection interior bright.
+///
+/// Falls back to the original two-pass path when the window doesn't match the
+/// frame's pixel dimensions (the rare DPI-scaling case), where the flat memcpy
+/// wouldn't align.
+pub fn blit_background_dimmed(
+    buf: &mut [u32],
+    w: u32,
+    h: u32,
+    frame: &RgbaImage,
+    dimmed: &[u32],
+    inside: Option<(u32, u32, u32, u32)>,
+) {
+    let (fw, fh) = frame.dimensions();
+    if fw != w || fh != h || dimmed.len() != buf.len() {
+        // Scaling / mismatch fallback: exact original behavior.
+        draw_background(buf, w, h, frame);
+        apply_dim(buf, w, h, inside);
+        return;
+    }
+
+    // Fast path: 1:1 mapping (the common case). One vectorizable memcpy…
+    buf.copy_from_slice(dimmed);
+
+    // …then re-brighten just the selection interior straight from the frame.
+    if let Some((ix, iy, iw, ih)) = inside {
+        if iw == 0 || ih == 0 {
+            return;
+        }
+        let raw = frame.as_raw();
+        let w_us = w as usize;
+        let fw_us = fw as usize;
+        let ix_us = ix.min(w) as usize;
+        let ix2_us = ix.saturating_add(iw).min(w) as usize;
+        let iy2 = iy.saturating_add(ih).min(h);
+        for y in iy..iy2 {
+            let y_us = y as usize;
+            let dst = &mut buf[y_us * w_us + ix_us..y_us * w_us + ix2_us];
+            let src_row = y_us * fw_us * 4;
+            for (dx, px) in dst.iter_mut().enumerate() {
+                let i = src_row + (ix_us + dx) * 4;
+                *px = ((raw[i] as u32) << 16)
+                    | ((raw[i + 1] as u32) << 8)
+                    | (raw[i + 2] as u32);
+            }
+        }
+    }
+}
+
 /// Darken everything in `buf` except the optional `inside` rect (x, y, w, h).
 ///
 /// Hot path: called every redraw. Operate on row slices instead of 2D index
@@ -433,6 +507,91 @@ mod magnifier_tests {
         let (x, y) = magnifier_position((5, 5), (800, 600), 120, 20);
         // Default would be (25, 25), fits — no flip.
         assert_eq!((x, y), (25, 25));
+    }
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::*;
+    use image::{Rgba, RgbaImage};
+
+    fn gradient_frame(w: u32, h: u32) -> RgbaImage {
+        let mut img = RgbaImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                img.put_pixel(
+                    x,
+                    y,
+                    Rgba([
+                        (x * 7 + 3) as u8,
+                        (y * 5 + 11) as u8,
+                        (x + y) as u8,
+                        255,
+                    ]),
+                );
+            }
+        }
+        img
+    }
+
+    /// The precompute + blit fast path must be bit-for-bit identical to the
+    /// original `draw_background` + `apply_dim` two-pass path.
+    fn assert_equiv(frame: &RgbaImage, inside: Option<(u32, u32, u32, u32)>) {
+        let (w, h) = frame.dimensions();
+        let n = (w * h) as usize;
+
+        let mut old = vec![0u32; n];
+        draw_background(&mut old, w, h, frame);
+        apply_dim(&mut old, w, h, inside);
+
+        let dimmed = precompute_dimmed(frame);
+        let mut new = vec![0u32; n];
+        blit_background_dimmed(&mut new, w, h, frame, &dimmed, inside);
+
+        assert_eq!(old, new, "inside={inside:?}");
+    }
+
+    #[test]
+    fn blit_matches_two_pass_no_selection() {
+        assert_equiv(&gradient_frame(37, 29), None);
+    }
+
+    #[test]
+    fn blit_matches_two_pass_with_selection() {
+        let frame = gradient_frame(64, 48);
+        assert_equiv(&frame, Some((10, 8, 20, 15)));
+    }
+
+    #[test]
+    fn blit_matches_two_pass_selection_clamped_past_edge() {
+        // Selection running off the right/bottom edge exercises the min-clamps.
+        let frame = gradient_frame(40, 40);
+        assert_equiv(&frame, Some((30, 30, 50, 50)));
+    }
+
+    #[test]
+    fn blit_matches_two_pass_zero_size_selection() {
+        assert_equiv(&gradient_frame(24, 24), Some((5, 5, 0, 0)));
+    }
+
+    #[test]
+    fn blit_falls_back_on_size_mismatch() {
+        // dimmed cache built for the frame; buffer sized to a *different* WxH
+        // forces the scaling fallback, which must equal draw_background+apply_dim
+        // at that target size.
+        let frame = gradient_frame(32, 32);
+        let dimmed = precompute_dimmed(&frame);
+        let (w, h) = (20u32, 16u32);
+        let inside = Some((2, 2, 6, 6));
+
+        let mut expected = vec![0u32; (w * h) as usize];
+        draw_background(&mut expected, w, h, &frame);
+        apply_dim(&mut expected, w, h, inside);
+
+        let mut got = vec![0u32; (w * h) as usize];
+        blit_background_dimmed(&mut got, w, h, &frame, &dimmed, inside);
+
+        assert_eq!(expected, got);
     }
 }
 

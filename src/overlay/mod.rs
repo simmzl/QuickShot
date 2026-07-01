@@ -114,6 +114,13 @@ pub struct Overlay {
     pub window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     pub frame: RgbaImage,
+    /// Precomputed fully-dimmed background (swizzled 0x00RRGGBB, channels
+    /// halved). The frame is fixed for the overlay's lifetime, so we build this
+    /// once and memcpy it every redraw instead of re-dimming ~8M px per frame.
+    dimmed_bg: Vec<u32>,
+    /// Memoized per-block averages for committed mosaic annotations, so we
+    /// don't re-sum the source pixels of every mosaic on each redraw.
+    mosaic_cache: annotate_render::MosaicCache,
     pub(crate) state: OverlayState,
     pub(crate) cursor: (i32, i32),
     last_click: Option<std::time::Instant>,
@@ -237,10 +244,14 @@ impl Overlay {
         let surface =
             Surface::new(&context, window.clone()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
 
+        let dimmed_bg = render::precompute_dimmed(&frame);
+
         let mut overlay = Self {
             window,
             surface,
             frame,
+            dimmed_bg,
+            mosaic_cache: annotate_render::MosaicCache::new(),
             state: OverlayState::Idle,
             cursor: (0, 0),
             last_click: None,
@@ -326,11 +337,12 @@ impl Overlay {
                             && rect.contains(self.cursor)
                         {
                             let cursor_frame = self.window_point_to_frame_point(self.cursor);
-                            let history_snapshot: Vec<annotate::Annotation> =
-                                self.history.current().to_vec();
+                            // Disjoint field borrows: `history.current()` borrows
+                            // `self.history`, `&mut self.font` borrows `self.font`
+                            // — no clone of the annotation list needed per move.
                             let new_hover = annotate_render::annotation_at_cursor(
                                 cursor_frame,
-                                &history_snapshot,
+                                self.history.current(),
                                 &mut self.font,
                             );
                             if new_hover != self.hovered_annotation_idx {
@@ -569,10 +581,12 @@ impl Overlay {
 
                     // Hit-test existing Text annotations in reverse z-order
                     // (latest-drawn = on top). If we land on one, lift it back
-                    // into edit mode.
-                    let history_anns: Vec<annotate::Annotation> =
-                        self.history.current().to_vec();
-                    let hit_idx = history_anns
+                    // into edit mode. Iterate the history slice directly —
+                    // `history.current()` and `&mut self.font` are disjoint
+                    // field borrows, so no per-click clone of the list is needed.
+                    let hit_idx = self
+                        .history
+                        .current()
                         .iter()
                         .enumerate()
                         .rev()
@@ -637,11 +651,10 @@ impl Overlay {
                         // lands on an existing annotation's footprint, start an
                         // annotation drag (priority above selection translate).
                         let cursor_frame = self.window_point_to_frame_point(self.cursor);
-                        let history_snapshot: Vec<annotate::Annotation> =
-                            self.history.current().to_vec();
+                        // Disjoint field borrows (history vs. font) — no clone.
                         if let Some(idx) = annotate_render::annotation_at_cursor(
                             cursor_frame,
-                            &history_snapshot,
+                            self.history.current(),
                             &mut self.font,
                         ) {
                             // Lift the annotation out of history at press time
@@ -994,8 +1007,10 @@ impl Overlay {
         let hovered_idx = self.hovered_annotation_idx;
         let active_tool = self.tool;
         let frame_ref = &self.frame;
+        let dimmed_bg = &self.dimmed_bg;
         let font = &mut self.font;
         let icon_font = &mut self.icon_font;
+        let mosaic_cache = &mut self.mosaic_cache;
         let scale = self.scale_factor;
 
         let mut buf = self
@@ -1003,8 +1018,7 @@ impl Overlay {
             .buffer_mut()
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
 
-        render::draw_background(&mut buf, w, h, frame_ref);
-        render::apply_dim(&mut buf, w, h, sel_tuple);
+        render::blit_background_dimmed(&mut buf, w, h, frame_ref, dimmed_bg, sel_tuple);
         if let Some(r) = sel_tuple {
             render::draw_selection_outline(&mut buf, w, h, r, outline_color);
         }
@@ -1018,6 +1032,7 @@ impl Overlay {
                     frame_ref,
                     ann,
                     font,
+                    Some(&mut *mosaic_cache),
                 );
             }
             if let Some(pending) = self.pending_draw.as_ref() {
@@ -1066,7 +1081,7 @@ impl Overlay {
                 let dy = cursor_frame.1 - drag.press_frame.1;
                 let translated = drag.original.translated(dx, dy);
                 annotate_render::draw_annotation_on_buf(
-                    &mut buf, w, h, frame_ref, &translated, font,
+                    &mut buf, w, h, frame_ref, &translated, font, None,
                 );
                 let bbox_frame = annotate_render::annotation_bbox(&translated, font);
                 if let Some(bbox_win) = annotate_render::frame_rect_to_window_rect(

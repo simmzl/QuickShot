@@ -43,10 +43,17 @@ pub fn enumerate_windows(
         fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> CFArrayRef;
     }
 
-    eprintln!(
-        "QuickShot: snap enumeration: monitor_geom=({}, {}, {}x{}) scale={}",
-        monitor_geom.x, monitor_geom.y, monitor_geom.width, monitor_geom.height, scale_factor,
-    );
+    // Per-window snap tracing is verbose (one line for every on-screen window
+    // on each capture) and adds synchronous stderr latency to overlay open.
+    // Gate it behind QUICKSHOT_DEBUG so it's opt-in for diagnostics only.
+    let debug = std::env::var_os("QUICKSHOT_DEBUG").is_some();
+
+    if debug {
+        eprintln!(
+            "QuickShot: snap enumeration: monitor_geom=({}, {}, {}x{}) scale={}",
+            monitor_geom.x, monitor_geom.y, monitor_geom.width, monitor_geom.height, scale_factor,
+        );
+    }
 
     let option =
         KCG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY | KCG_WINDOW_LIST_EXCLUDE_DESKTOP_ELEMENTS;
@@ -83,10 +90,16 @@ pub fn enumerate_windows(
         let Some(layer) = read_i64(dict, "kCGWindowLayer") else { continue };
 
         // Read owner + window names for diagnostics (best-effort — may be
-        // absent for some apps). Used in eprintlns so the user can read
-        // /tmp/QuickShot.log and see what layer each window is on.
-        let owner_name = read_string(dict, "kCGWindowOwnerName").unwrap_or_default();
-        let window_name = read_string(dict, "kCGWindowName").unwrap_or_default();
+        // absent for some apps). Only used in the QUICKSHOT_DEBUG eprintlns, so
+        // skip the CFString→String allocation entirely when not tracing.
+        let (owner_name, window_name) = if debug {
+            (
+                read_string(dict, "kCGWindowOwnerName").unwrap_or_default(),
+                read_string(dict, "kCGWindowName").unwrap_or_default(),
+            )
+        } else {
+            (String::new(), String::new())
+        };
 
         // Layer filter: accept any user-facing window (0..20). This catches
         // normal app windows (0), floating panels like iTerm's hotkey window
@@ -96,10 +109,12 @@ pub fn enumerate_windows(
         // and wallpaper (negative).
         let layer_ok = layer >= 0 && layer < 20;
         if !layer_ok {
-            eprintln!(
-                "snap-debug: SKIP layer={} pid={} owner={:?} name={:?} (layer out of range)",
-                layer, pid, owner_name, window_name,
-            );
+            if debug {
+                eprintln!(
+                    "snap-debug: SKIP layer={} pid={} owner={:?} name={:?} (layer out of range)",
+                    layer, pid, owner_name, window_name,
+                );
+            }
             continue;
         }
         let layer = layer as i32;
@@ -111,10 +126,12 @@ pub fn enumerate_windows(
         let Some(cg_h) = read_f64(&bounds_dict, "Height") else { continue };
 
         if cg_w < MIN_WINDOW_DIMENSION_PX || cg_h < MIN_WINDOW_DIMENSION_PX {
-            eprintln!(
-                "snap-debug: SKIP small layer={} pid={} owner={:?} name={:?} size={}x{}",
-                layer, pid, owner_name, window_name, cg_w as i32, cg_h as i32,
-            );
+            if debug {
+                eprintln!(
+                    "snap-debug: SKIP small layer={} pid={} owner={:?} name={:?} size={}x{}",
+                    layer, pid, owner_name, window_name, cg_w as i32, cg_h as i32,
+                );
+            }
             continue;
         }
 
@@ -128,12 +145,14 @@ pub fn enumerate_windows(
         let phys_w = (cg_w * scale_factor as f64).round() as i32;
         let phys_h = (cg_h * scale_factor as f64).round() as i32;
 
-        eprintln!(
-            "snap-debug: KEEP layer={} pid={} owner={:?} name={:?} cg=({},{},{}x{}) win=({},{},{}x{})",
-            layer, pid, owner_name, window_name,
-            cg_x as i32, cg_y as i32, cg_w as i32, cg_h as i32,
-            local_x, local_y, phys_w, phys_h,
-        );
+        if debug {
+            eprintln!(
+                "snap-debug: KEEP layer={} pid={} owner={:?} name={:?} cg=({},{},{}x{}) win=({},{},{}x{})",
+                layer, pid, owner_name, window_name,
+                cg_x as i32, cg_y as i32, cg_w as i32, cg_h as i32,
+                local_x, local_y, phys_w, phys_h,
+            );
+        }
 
         out.push(WindowEntry {
             bounds: Rect {
