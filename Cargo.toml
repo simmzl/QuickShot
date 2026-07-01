@@ -26,7 +26,10 @@ core-graphics = "0.23"
 core-foundation = "0.10"
 
 [profile.release]
-opt-level = "z"
+# Pixel-pushing hot loops (render.rs / annotate_render.rs) rely on LLVM
+# auto-vectorization; opt-level 3 unlocks it. `strip`+`lto` keep the binary
+# small enough for a menubar daemon despite the speed-first setting.
+opt-level = 3
 lto = true
 codegen-units = 1
 strip = true

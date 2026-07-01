@@ -26,15 +26,17 @@ impl IconFont {
         }
     }
 
-    fn rasterize(&mut self, ch: char, px_size: f32) -> Option<&(fontdue::Metrics, Vec<u8>)> {
+    /// Ensure the glyph for `(ch, px_size)` is in the cache and return its key,
+    /// or `None` if the icon font failed to load. Callers then borrow the entry
+    /// via `self.cache.get(&key)` — avoids cloning the glyph bitmap per redraw.
+    fn ensure_glyph(&mut self, ch: char, px_size: f32) -> Option<(char, u32)> {
         let font = self.inner.as_ref()?;
         let key = (ch, (px_size * 10.0) as u32);
-        if self.cache.contains_key(&key) {
-            return self.cache.get(&key);
+        if !self.cache.contains_key(&key) {
+            let (m, b) = font.rasterize(ch, px_size);
+            self.cache.insert(key, (m, b));
         }
-        let (m, b) = font.rasterize(ch, px_size);
-        self.cache.insert(key, (m, b));
-        self.cache.get(&key)
+        Some(key)
     }
 
     /// Paint glyph `ch` centered in a `box_size`×`box_size` square at `origin`.
@@ -53,7 +55,10 @@ impl IconFont {
         // Lucide glyphs fit their em-box quite snugly; render at ~85% of the
         // button to leave a modest visual padding around the icon.
         let px_size = box_size as f32 * 0.85;
-        let Some((metrics, bitmap)) = self.rasterize(ch, px_size).cloned() else {
+        let Some(key) = self.ensure_glyph(ch, px_size) else {
+            return;
+        };
+        let Some((metrics, bitmap)) = self.cache.get(&key) else {
             return;
         };
         if metrics.width == 0 || metrics.height == 0 {
