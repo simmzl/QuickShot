@@ -1,6 +1,6 @@
 [package]
 name = "QuickShot"
-version = "1.1.8"
+version = "1.2.0"
 edition = "2021"
 description = "QuickShot — a small, fast screenshot daemon for macOS and Windows"
 license = "MIT OR Apache-2.0"
@@ -24,6 +24,47 @@ xcap = "0.9"
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.23"
 core-foundation = "0.10"
+# Native text editing (NSTextView) + AppKit text rasterization so the live
+# editor and the exported PNG share one font stack. All three crates are
+# already in the dependency graph via winit / softbuffer / tray-icon.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std", "NSString", "NSGeometry", "NSObject", "NSRange", "NSDictionary",
+    "NSAttributedString", "NSUndoManager", "objc2-core-foundation",
+] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std", "objc2-core-foundation", "objc2-core-graphics",
+    "NSResponder", "NSView", "NSText", "NSTextView", "NSFont", "NSColor",
+    "NSEvent", "NSWindow", "NSApplication", "NSGraphicsContext",
+    "NSTextContainer", "NSLayoutManager", "NSTextStorage",
+    "NSAttributedString", "NSStringDrawing", "NSColorSpace",
+    "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSImage",
+    "objc2-quartz-core",
+] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+    "std", "CGBitmapContext", "CGContext", "CGColorSpace", "CGImage",
+] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = [
+    "std", "CFCGTypes", "CFString", "CFBase", "CFDictionary", "CFNumber",
+] }
+# Zero-copy overlay presentation (see src/overlay/present.rs).
+objc2-io-surface = { version = "0.3", default-features = false, features = [
+    "std", "IOSurfaceRef", "IOSurfaceTypes", "libc", "objc2", "objc2-core-foundation",
+] }
+objc2-quartz-core = { version = "0.3", default-features = false, features = [
+    "std", "CALayer", "CATransaction", "objc2-core-foundation",
+] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Controls",
+    "Win32_System_LibraryLoader",
+] }
 
 # Windows-only: embed the app icon into the .exe via build.rs.
 [target.'cfg(windows)'.build-dependencies]

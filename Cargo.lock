@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "QuickShot"
-version = "1.1.8"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -14,12 +14,20 @@ dependencies = [
  "global-hotkey",
  "image",
  "notify-rust",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "objc2-io-surface",
+ "objc2-quartz-core 0.3.2",
  "rfd",
  "serde",
  "softbuffer",
  "time",
  "toml 0.8.2",
  "tray-icon",
+ "windows-sys 0.59.0",
  "winit",
  "winresource",
  "xcap",
@@ -2469,6 +2477,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d"
 dependencies = [
  "bitflags 2.11.1",
+ "libc",
  "objc2 0.6.4",
  "objc2-core-foundation",
 ]
