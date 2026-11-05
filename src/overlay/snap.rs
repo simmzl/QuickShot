@@ -135,6 +135,21 @@ pub fn enumerate_windows(
             continue;
         }
 
+        // Floating (layer > 0) windows that blanket an entire display are
+        // invisible click-through overlays (e.g. ChatGPT's companion panel,
+        // screen-annotation / dimming utilities), not something the user
+        // means to capture. Snapping to them makes every hover on that
+        // display select the whole screen, so drop them.
+        if layer > 0 && covers_a_display(cg_x, cg_y, cg_w, cg_h) {
+            if debug {
+                eprintln!(
+                    "snap-debug: SKIP full-display overlay layer={} pid={} owner={:?} name={:?}",
+                    layer, pid, owner_name, window_name,
+                );
+            }
+            continue;
+        }
+
         // CG returns bounds in points (logical units). winit's cursor and the
         // softbuffer are in physical pixels, so multiply by scale_factor to
         // bring window bounds into the same unit.
@@ -166,6 +181,31 @@ pub fn enumerate_windows(
     }
 
     out
+}
+
+/// True when the CG-space rect covers (within a couple of points) the full
+/// bounds of any active display.
+#[cfg(target_os = "macos")]
+fn covers_a_display(x: f64, y: f64, w: f64, h: f64) -> bool {
+    use core_graphics::display::CGDisplay;
+    let Ok(ids) = CGDisplay::active_displays() else { return false };
+    ids.into_iter().any(|id| {
+        let b = CGDisplay::new(id).bounds();
+        rect_covers(
+            (x, y, w, h),
+            (b.origin.x, b.origin.y, b.size.width, b.size.height),
+        )
+    })
+}
+
+/// `outer` covers `inner` with a small tolerance (points).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn rect_covers(outer: (f64, f64, f64, f64), inner: (f64, f64, f64, f64)) -> bool {
+    const TOL: f64 = 2.0;
+    outer.0 <= inner.0 + TOL
+        && outer.1 <= inner.1 + TOL
+        && outer.0 + outer.2 >= inner.0 + inner.2 - TOL
+        && outer.1 + outer.3 >= inner.1 + inner.3 - TOL
 }
 
 /// Look up `key` in the untyped dict and downcast the value to `T`.
@@ -287,12 +327,21 @@ mod tests {
         // window (Finder, Terminal, IDE…). Smoke test only — exact contents
         // depend on the test machine. Ignored in CI: headless runners expose
         // only system UI (Dock, Menubar…), which the layer filter drops.
-        let geom = MonitorGeom { x: 0, y: 0, width: 1920, height: 1080 };
+        let geom = MonitorGeom { x: 0, y: 0, width: 1920, height: 1080, scale: 1.0, display_id: 0 };
         let entries = enumerate_windows(&geom, std::process::id(), 1.0);
         assert!(
             !entries.is_empty(),
             "expected at least one window in the list on macOS",
         );
+    }
+
+    #[test]
+    fn rect_covers_full_display_only() {
+        let display = (3008.0, 229.0, 1512.0, 982.0);
+        assert!(rect_covers((3008.0, 229.0, 1512.0, 982.0), display));
+        assert!(rect_covers((3007.0, 228.0, 1514.0, 984.0), display));
+        assert!(!rect_covers((3101.0, 282.0, 1315.0, 726.0), display));
+        assert!(!rect_covers((3008.0, 229.0, 1512.0, 900.0), display));
     }
 
     #[test]
@@ -325,3 +374,4 @@ mod tests {
         assert!(!drag_threshold_exceeded((10, 10), (9, 9)));
     }
 }
+

@@ -1,57 +1,90 @@
-//! Mini toolbar rendered during the Adjusting state. Pure-ish: layout is
-//! pure; drawing is straight softbuffer paints.
+//! Floating annotation toolbar shown in the Adjusting state.
+//!
+//! Visual design (all sizes in points, multiplied by the display scale):
+//!   * Main bar — 42pt tall, 12pt corner radius, near-black translucent
+//!     surface with a hairline border and soft drop shadow. Groups:
+//!     [7 tools] | [undo redo] | [pin save] | [cancel  confirm].
+//!   * Style bar — a second, smaller pill under the main bar holding the
+//!     color swatches and stroke sizes. Hidden for the Move tool (no style
+//!     applies); colors dim under Mosaic (stroke = block size there).
+//!   * 32pt hit targets, 18pt Lucide icons, hover highlight, accent-tinted
+//!     active tool, and an accent-filled primary "confirm" button.
+//!
+//! Layout is pure (testable); drawing paints straight into softbuffer.
 
 use super::annotate::{AnnotationStyle, Color, Stroke, Tool};
 use super::state::Rect;
 
-/// All toolbar lengths/sizes are in physical pixels at this scale.
-pub const UI_SCALE: i32 = 3;
+// ---- metrics (points) -------------------------------------------------------
+const BAR_PAD: f32 = 5.0;
+const BTN: f32 = 32.0;
+const BTN_GAP: f32 = 2.0;
+const SEP_W: f32 = 13.0;
+const BAR_RADIUS: f32 = 12.0;
+const BTN_RADIUS: f32 = 8.0;
+const ICON_PT: f32 = 18.0;
+const SUB_H: f32 = 34.0;
+const SUB_GAP: f32 = 6.0;
+const SUB_CELL: f32 = 24.0;
+const SUB_CELL_GAP: f32 = 4.0;
+const SWATCH_R: f32 = 8.0;
+const EDGE_GAP: f32 = 8.0; // distance from the selection edge
+const SCREEN_MARGIN: f32 = 6.0;
 
-pub const TOOLBAR_H: i32 = 30 * UI_SCALE;
-pub const TOOLBAR_GAP: i32 = 6 * UI_SCALE; // distance from selection edge
-pub const ICON_SIZE: i32 = 22 * UI_SCALE;
-pub const ICON_PAD: i32 = 4 * UI_SCALE;
-pub const SEP_WIDTH: i32 = 8 * UI_SCALE;
-pub const ROW_GAP: i32 = 4 * UI_SCALE;
-pub const SWATCH_SIZE: i32 = 14 * UI_SCALE;
-pub const SWATCH_PAD: i32 = 6 * UI_SCALE;
-pub const STROKE_DOT_AREA: i32 = 18 * UI_SCALE;
-const PILL_RADIUS: i32 = 4 * UI_SCALE;
-
-// Lucide icon codepoints. Sourced from lucide-static's `font/info.json`
-// (npm package, identical to the official lucide.dev set). Each constant
-// is the Private Use Area codepoint that maps to the named SVG icon in
-// the bundled `assets/fonts/lucide.ttf`.
-const ICON_MOVE: char       = '\u{e121}'; // move
-const ICON_ARROW: char      = '\u{e493}'; // move-up-right
-const ICON_SQUARE: char     = '\u{e167}'; // square
-const ICON_CIRCLE: char     = '\u{e076}'; // circle
-const ICON_PENCIL: char     = '\u{e1f9}'; // pencil
-const ICON_TYPE: char       = '\u{e198}'; // type
-const ICON_GRID_2X2: char   = '\u{e4ff}'; // grid-2x2
-const ICON_UNDO: char       = '\u{e2a1}'; // undo-2
-const ICON_REDO: char       = '\u{e2a0}'; // redo-2
-const ICON_PIN: char        = '\u{e259}'; // pin
-const ICON_SAVE: char       = '\u{e14d}'; // save
-
-/// Brand/theme color used for confirmed-state UI (selection outline,
-/// future hover or accent elements). softbuffer 0x00RRGGBB.
+// ---- colors (0x00RRGGBB) ------------------------------------------------------
+/// Brand/theme color: selection outline, active tool, primary button.
 pub const THEME_COLOR: u32 = 0x00_FF_6B_35;
-
 /// Lighter coral, used for hover / preview state (window snap, etc.).
-/// Roughly THEME_COLOR mixed 50% with white.
 pub const SNAP_PREVIEW_COLOR: u32 = 0x00_FF_A8_88;
 
+const SURFACE: u32 = 0x00_1C_1C_1F;
+const SURFACE_ALPHA: f32 = 0.94;
+const BORDER: u32 = 0x00_FF_FF_FF;
+const BORDER_ALPHA: f32 = 0.10;
+const ICON: u32 = 0x00_E8_E8_ED;
+const ICON_HOVER: u32 = 0x00_FF_FF_FF;
+const ICON_DISABLED: u32 = 0x00_5C_5C_62;
+const ICON_ACTIVE: u32 = 0x00_FF_9A_70;
+const ACCENT_HOVER: u32 = 0x00_FF_82_52;
+const SEP_COLOR: u32 = 0x00_FF_FF_FF;
+const STROKE_IDLE: u32 = 0x00_9C_9C_A3;
+
+// Lucide icon codepoints (see assets/fonts/lucide.ttf subset).
+const ICON_MOVE: char = '\u{e121}'; // move
+const ICON_ARROW: char = '\u{e493}'; // move-up-right
+const ICON_SQUARE: char = '\u{e167}'; // square
+const ICON_CIRCLE: char = '\u{e076}'; // circle
+const ICON_PENCIL: char = '\u{e1f9}'; // pencil
+const ICON_TYPE: char = '\u{e198}'; // type
+const ICON_GRID_2X2: char = '\u{e4ff}'; // grid-2x2
+const ICON_UNDO: char = '\u{e2a1}'; // undo-2
+const ICON_REDO: char = '\u{e2a0}'; // redo-2
+const ICON_PIN: char = '\u{e259}'; // pin
+const ICON_SAVE: char = '\u{e14d}'; // save
+
 pub struct Toolbar {
+    /// Bounding box of both bars (layout tests / future callers).
+    #[allow(dead_code)]
     pub origin: (i32, i32),
+    #[allow(dead_code)]
     pub size: (i32, i32),
+    /// Main bar rect (origin, size).
+    pub main: ((i32, i32), (i32, i32)),
+    /// Style bar rect (origin, size).
+    pub sub: ((i32, i32), (i32, i32)),
+    /// x-centers of the separators in the main bar.
+    pub main_seps: Vec<i32>,
+    pub sub_sep: i32,
     pub tool_buttons: Vec<ToolButton>,
     pub undo_button: IconButton,
     pub redo_button: IconButton,
     pub pin_button: IconButton,
     pub save_button: IconButton,
+    pub cancel_button: IconButton,
+    pub confirm_button: IconButton,
     pub color_buttons: Vec<ColorButton>,
     pub stroke_buttons: Vec<StrokeButton>,
+    pub scale: f32,
 }
 
 pub struct ToolButton {
@@ -84,6 +117,8 @@ pub enum ToolbarHit {
     Redo,
     Pin,
     Save,
+    Cancel,
+    Confirm,
     Color(Color),
     Stroke(Stroke),
     None,
@@ -93,126 +128,125 @@ const TOOL_ORDER: [Tool; 7] = [
     Tool::Move, Tool::Arrow, Tool::Rect, Tool::Ellipse,
     Tool::Pen, Tool::Text, Tool::Mosaic,
 ];
-
 const COLOR_ORDER: [Color; 4] = [Color::Red, Color::Yellow, Color::Green, Color::Blue];
 const STROKE_ORDER: [Stroke; 3] = [Stroke::Thin, Stroke::Medium, Stroke::Thick];
 
+/// Whether the style bar applies to `tool`.
+fn style_bar_visible(tool: Tool) -> bool {
+    tool != Tool::Move
+}
+
 impl Toolbar {
-    pub fn layout(selection: Rect, window_size: (u32, u32)) -> Toolbar {
-        // Row 1: tools + sep + undo + redo (existing math, but TOOL_ORDER is now 7).
-        let tools_w = TOOL_ORDER.len() as i32 * ICON_SIZE
-            + (TOOL_ORDER.len() as i32 - 1) * ICON_PAD;
-        let row1_content_w = tools_w
-            + SEP_WIDTH
-            + (ICON_SIZE + ICON_PAD) + ICON_SIZE
-            + ICON_PAD + ICON_SIZE
-            + ICON_PAD + ICON_SIZE;
-        let row1_w = row1_content_w + 2 * ICON_PAD;
+    /// `scale` = display backing scale (physical px per point).
+    pub fn layout(selection: Rect, window_size: (u32, u32), scale: f32) -> Toolbar {
+        let s = scale.max(0.5);
+        let px = |v: f32| (v * s).round() as i32;
+        let btn = px(BTN);
+        let gap = px(BTN_GAP);
+        let sep = px(SEP_W);
+        let pad = px(BAR_PAD);
+        let bar_h = btn + 2 * pad;
 
-        // Row 2: 4 swatches + sep + 3 stroke dots.
-        let swatches_w = COLOR_ORDER.len() as i32 * SWATCH_SIZE
-            + (COLOR_ORDER.len() as i32 - 1) * SWATCH_PAD;
-        let strokes_w = STROKE_ORDER.len() as i32 * STROKE_DOT_AREA
-            + (STROKE_ORDER.len() as i32 - 1) * SWATCH_PAD;
-        let row2_content_w = swatches_w + SEP_WIDTH + strokes_w;
-        let row2_w = row2_content_w + 2 * ICON_PAD;
-
-        let bar_w = row1_w.max(row2_w);
-        let bar_h = TOOLBAR_H * 2 + ROW_GAP;
-
-        let mut bar_x = selection.x + selection.w / 2 - bar_w / 2;
-        let below_y = selection.y + selection.h + TOOLBAR_GAP;
-
-        let wwi = window_size.0 as i32;
-        let whi = window_size.1 as i32;
-        if bar_x < 4 {
-            bar_x = 4;
-        }
-        if bar_x + bar_w > wwi - 4 {
-            bar_x = (wwi - 4 - bar_w).max(4);
-        }
-
-        let bar_y = if below_y + bar_h <= whi - 4 {
-            below_y
-        } else {
-            let above = selection.y - TOOLBAR_GAP - bar_h;
-            if above >= 4 {
-                above
-            } else {
-                (whi - bar_h - 4).max(4)
+        // ---- main bar width
+        let groups = [TOOL_ORDER.len() as i32, 2, 2, 2];
+        let mut main_w = 2 * pad;
+        for (i, &n) in groups.iter().enumerate() {
+            main_w += n * btn + (n - 1) * gap;
+            if i + 1 < groups.len() {
+                main_w += sep;
             }
+        }
+        // ---- style bar width
+        let cell = px(SUB_CELL);
+        let cgap = px(SUB_CELL_GAP);
+        let sub_pad = px(BAR_PAD);
+        let sub_h = px(SUB_H);
+        let n_c = COLOR_ORDER.len() as i32;
+        let n_s = STROKE_ORDER.len() as i32;
+        let sub_w = 2 * sub_pad + n_c * cell + (n_c - 1) * cgap + sep + n_s * cell + (n_s - 1) * cgap;
+
+        let total_w = main_w.max(sub_w);
+        let total_h = bar_h + px(SUB_GAP) + sub_h;
+
+        // ---- placement: centered under the selection, flip above if needed
+        let (ww, wh) = (window_size.0 as i32, window_size.1 as i32);
+        let margin = px(SCREEN_MARGIN);
+        let edge = px(EDGE_GAP);
+        let mut x = selection.x + selection.w / 2 - main_w / 2;
+        x = x.min(ww - margin - main_w).max(margin);
+        let below = selection.y + selection.h + edge;
+        let y = if below + total_h <= wh - margin {
+            below
+        } else {
+            let above = selection.y - edge - total_h;
+            if above >= margin { above } else { (wh - total_h - margin).max(margin) }
         };
 
-        // Row 1 — tools + undo/redo.
-        let row1_x_start = bar_x + (bar_w - row1_content_w) / 2;
-        let mut x = row1_x_start;
-        let row1_y = bar_y + (TOOLBAR_H - ICON_SIZE) / 2;
+        // ---- main bar buttons
+        let by = y + pad;
+        let mut cx = x + pad;
+        let mut main_seps = Vec::new();
         let mut tool_buttons = Vec::with_capacity(TOOL_ORDER.len());
-        for &t in TOOL_ORDER.iter() {
-            tool_buttons.push(ToolButton {
-                tool: t,
-                origin: (x, row1_y),
-                size: (ICON_SIZE, ICON_SIZE),
-            });
-            x += ICON_SIZE + ICON_PAD;
+        for (i, &t) in TOOL_ORDER.iter().enumerate() {
+            if i > 0 { cx += gap; }
+            tool_buttons.push(ToolButton { tool: t, origin: (cx, by), size: (btn, btn) });
+            cx += btn;
         }
-        x += SEP_WIDTH;
-        let undo_button = IconButton {
-            origin: (x, row1_y),
-            size: (ICON_SIZE, ICON_SIZE),
+        let mut next = |cx: &mut i32, first: bool| -> IconButton {
+            if first {
+                main_seps.push(*cx + sep / 2);
+                *cx += sep;
+            } else {
+                *cx += gap;
+            }
+            let b = IconButton { origin: (*cx, by), size: (btn, btn) };
+            *cx += btn;
+            b
         };
-        x += ICON_SIZE + ICON_PAD;
-        let redo_button = IconButton {
-            origin: (x, row1_y),
-            size: (ICON_SIZE, ICON_SIZE),
-        };
-        x += ICON_SIZE + ICON_PAD;
-        let pin_button = IconButton {
-            origin: (x, row1_y),
-            size: (ICON_SIZE, ICON_SIZE),
-        };
-        x += ICON_SIZE + ICON_PAD;
-        let save_button = IconButton {
-            origin: (x, row1_y),
-            size: (ICON_SIZE, ICON_SIZE),
-        };
+        let undo_button = next(&mut cx, true);
+        let redo_button = next(&mut cx, false);
+        let pin_button = next(&mut cx, true);
+        let save_button = next(&mut cx, false);
+        let cancel_button = next(&mut cx, true);
+        let confirm_button = next(&mut cx, false);
 
-        // Row 2 — colors + strokes.
-        let row2_x_start = bar_x + (bar_w - row2_content_w) / 2;
-        let row2_top = bar_y + TOOLBAR_H + ROW_GAP;
-        let row2_y = row2_top + (TOOLBAR_H - SWATCH_SIZE) / 2;
-        let mut x = row2_x_start;
+        // ---- style bar (centered under the main bar)
+        let sx = x + (main_w - sub_w) / 2;
+        let sy = y + bar_h + px(SUB_GAP);
+        let cy = sy + (sub_h - cell) / 2;
+        let mut cx = sx + sub_pad;
         let mut color_buttons = Vec::with_capacity(COLOR_ORDER.len());
-        for &c in COLOR_ORDER.iter() {
-            color_buttons.push(ColorButton {
-                color: c,
-                origin: (x, row2_y),
-                size: (SWATCH_SIZE, SWATCH_SIZE),
-            });
-            x += SWATCH_SIZE + SWATCH_PAD;
+        for (i, &c) in COLOR_ORDER.iter().enumerate() {
+            if i > 0 { cx += cgap; }
+            color_buttons.push(ColorButton { color: c, origin: (cx, cy), size: (cell, cell) });
+            cx += cell;
         }
-        x += SEP_WIDTH;
-        let stroke_y = row2_top + (TOOLBAR_H - STROKE_DOT_AREA) / 2;
+        let sub_sep = cx + sep / 2;
+        cx += sep;
         let mut stroke_buttons = Vec::with_capacity(STROKE_ORDER.len());
-        for &s in STROKE_ORDER.iter() {
-            stroke_buttons.push(StrokeButton {
-                stroke: s,
-                origin: (x, stroke_y),
-                size: (STROKE_DOT_AREA, STROKE_DOT_AREA),
-            });
-            x += STROKE_DOT_AREA + SWATCH_PAD;
+        for (i, &st) in STROKE_ORDER.iter().enumerate() {
+            if i > 0 { cx += cgap; }
+            stroke_buttons.push(StrokeButton { stroke: st, origin: (cx, cy), size: (cell, cell) });
+            cx += cell;
         }
 
         Toolbar {
-            origin: (bar_x, bar_y),
-            size: (bar_w, bar_h),
+            origin: (x, y),
+            size: (total_w, total_h),
+            main: ((x, y), (main_w, bar_h)),
+            sub: ((sx, sy), (sub_w, sub_h)),
+            main_seps,
+            sub_sep,
             tool_buttons,
             undo_button,
             redo_button,
             pin_button,
             save_button,
+            cancel_button,
+            confirm_button,
             color_buttons,
             stroke_buttons,
+            scale: s,
         }
     }
 
@@ -222,21 +256,23 @@ impl Toolbar {
                 return ToolbarHit::Tool(btn.tool);
             }
         }
-        if point_in(cursor, self.undo_button.origin, self.undo_button.size) {
-            return ToolbarHit::Undo;
+        let singles = [
+            (&self.undo_button, ToolbarHit::Undo),
+            (&self.redo_button, ToolbarHit::Redo),
+            (&self.pin_button, ToolbarHit::Pin),
+            (&self.save_button, ToolbarHit::Save),
+            (&self.cancel_button, ToolbarHit::Cancel),
+            (&self.confirm_button, ToolbarHit::Confirm),
+        ];
+        for (b, hit) in singles {
+            if point_in(cursor, b.origin, b.size) {
+                return hit;
+            }
         }
-        if point_in(cursor, self.redo_button.origin, self.redo_button.size) {
-            return ToolbarHit::Redo;
+        if !style_bar_visible(active_tool) {
+            return ToolbarHit::None;
         }
-        // Pin is row 1 (always clickable, even under Mosaic).
-        if point_in(cursor, self.pin_button.origin, self.pin_button.size) {
-            return ToolbarHit::Pin;
-        }
-        // Save is row 1 (always clickable, even under Mosaic).
-        if point_in(cursor, self.save_button.origin, self.save_button.size) {
-            return ToolbarHit::Save;
-        }
-        // Row 2 color: disabled under Mosaic (no color concept for mosaic).
+        // Colors are disabled under Mosaic (no color concept for mosaic).
         if active_tool != Tool::Mosaic {
             for btn in &self.color_buttons {
                 if point_in(cursor, btn.origin, btn.size) {
@@ -244,8 +280,7 @@ impl Toolbar {
                 }
             }
         }
-        // Row 2 stroke: enabled under all tools, including Mosaic
-        // (Mosaic uses stroke to pick block size).
+        // Stroke stays interactive under Mosaic (controls block size).
         for btn in &self.stroke_buttons {
             if point_in(cursor, btn.origin, btn.size) {
                 return ToolbarHit::Stroke(btn.stroke);
@@ -254,9 +289,10 @@ impl Toolbar {
         ToolbarHit::None
     }
 
-    #[allow(dead_code)] // public API; retained for future callers
-    pub fn contains(&self, cursor: (i32, i32)) -> bool {
-        point_in(cursor, self.origin, self.size)
+    /// Whether `cursor` is over any visible toolbar surface (incl. padding).
+    pub fn contains(&self, cursor: (i32, i32), active_tool: Tool) -> bool {
+        point_in(cursor, self.main.0, self.main.1)
+            || (style_bar_visible(active_tool) && point_in(cursor, self.sub.0, self.sub.1))
     }
 }
 
@@ -264,6 +300,7 @@ fn point_in(p: (i32, i32), origin: (i32, i32), size: (i32, i32)) -> bool {
     p.0 >= origin.0 && p.1 >= origin.1 && p.0 < origin.0 + size.0 && p.1 < origin.1 + size.1
 }
 
+/// Paint the toolbar. `hover` is the button currently under the cursor.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_toolbar(
     buf: &mut [u32],
@@ -275,83 +312,158 @@ pub fn draw_toolbar(
     can_undo: bool,
     can_redo: bool,
     show_hints: bool,
+    hover: ToolbarHit,
     icon_font: &mut crate::icon_font::IconFont,
+    label_font: &mut crate::text::Font,
 ) {
-    draw_pill(buf, win_w, win_h, toolbar.origin, toolbar.size, PILL_RADIUS, 0x000000, 0.7);
+    let s = toolbar.scale;
+    let c = Canvas { buf, w: win_w, h: win_h };
+    let mut c = c;
 
-    // Row 1.
+    // ---- surfaces
+    let show_sub = style_bar_visible(current_tool);
+    c.surface(toolbar.main.0, toolbar.main.1, BAR_RADIUS * s, s);
+    if show_sub {
+        c.surface(toolbar.sub.0, toolbar.sub.1, (BAR_RADIUS - 2.0) * s, s);
+    }
+
+    // ---- separators
+    let sep_h = 18.0 * s;
+    let (my, mh) = (toolbar.main.0 .1 as f32, toolbar.main.1 .1 as f32);
+    for &x in &toolbar.main_seps {
+        c.fill_rrect(x as f32 - 0.5 * s, my + (mh - sep_h) / 2.0, s.max(1.0), sep_h, 0.0, SEP_COLOR, 0.12);
+    }
+    if show_sub {
+        let (sy, sh) = (toolbar.sub.0 .1 as f32, toolbar.sub.1 .1 as f32);
+        let h = 16.0 * s;
+        c.fill_rrect(toolbar.sub_sep as f32 - 0.5 * s, sy + (sh - h) / 2.0, s.max(1.0), h, 0.0, SEP_COLOR, 0.12);
+    }
+
+    // ---- tool buttons
     for btn in &toolbar.tool_buttons {
-        if btn.tool == current_tool {
-            draw_pill(buf, win_w, win_h, btn.origin, btn.size, PILL_RADIUS, 0xFFFFFF, 0.25);
-        }
-        icon_font.render_centered(
-            buf, win_w, win_h, btn.origin, ICON_SIZE,
-            tool_icon_codepoint(btn.tool), 0xFFFFFF,
-        );
-    }
-    let undo_color = if can_undo { 0xFFFFFF } else { 0x888888 };
-    icon_font.render_centered(
-        buf, win_w, win_h, toolbar.undo_button.origin, ICON_SIZE, ICON_UNDO, undo_color,
-    );
-    let redo_color = if can_redo { 0xFFFFFF } else { 0x888888 };
-    icon_font.render_centered(
-        buf, win_w, win_h, toolbar.redo_button.origin, ICON_SIZE, ICON_REDO, redo_color,
-    );
-    // Pin icon is always white (no enabled/disabled state).
-    icon_font.render_centered(
-        buf, win_w, win_h, toolbar.pin_button.origin, ICON_SIZE, ICON_PIN, 0xFFFFFF,
-    );
-    // Save icon is always white (no enabled/disabled state).
-    icon_font.render_centered(
-        buf, win_w, win_h, toolbar.save_button.origin, ICON_SIZE, ICON_SAVE, 0xFFFFFF,
-    );
-
-    // Row 2 — color is faded/disabled under Mosaic (no color concept for
-    // mosaic). Stroke stays full opacity + interactive under Mosaic so the
-    // user can pick the block size.
-    let color_alpha: f32 = if current_tool == Tool::Mosaic { 0.4 } else { 1.0 };
-    let color_disabled = current_tool == Tool::Mosaic;
-    let stroke_alpha: f32 = 1.0;
-    let stroke_disabled = false;
-    for btn in &toolbar.color_buttons {
-        let argb = btn.color.argb();
-        let cx = btn.origin.0 + btn.size.0 / 2;
-        let cy = btn.origin.1 + btn.size.1 / 2;
-        let radius = btn.size.0 as f64 / 2.0;
-        // Filled disk (color), faded if Mosaic active.
-        let argb_alpha = mix_argb(argb, 0x000000, 1.0 - color_alpha);
-        fill_disk(buf, win_w, win_h, cx as f64, cy as f64, radius, argb_alpha);
-        if btn.color == current_style.color && !color_disabled {
-            // Active ring: white circle outlining the swatch.
-            stroke_ellipse(buf, win_w, win_h, cx, cy, radius + 3.0, radius + 3.0, 2, 0xFFFFFF);
-        }
-    }
-    for btn in &toolbar.stroke_buttons {
-        let cx = btn.origin.0 + btn.size.0 / 2;
-        let cy = btn.origin.1 + btn.size.1 / 2;
-        let dot_r = (btn.stroke.px() * UI_SCALE) as f64 / 2.0;
-        let argb = mix_argb(0xFFFFFF, 0x000000, 1.0 - stroke_alpha);
-        fill_disk(buf, win_w, win_h, cx as f64, cy as f64, dot_r, argb);
-        if btn.stroke == current_style.stroke && !stroke_disabled {
-            stroke_ellipse(buf, win_w, win_h, cx, cy, dot_r + 4.0, dot_r + 4.0, 2, 0xFFFFFF);
-        }
+        let active = btn.tool == current_tool;
+        let hovered = hover == ToolbarHit::Tool(btn.tool);
+        let color = if active {
+            c.button_bg(btn.origin, btn.size, s, THEME_COLOR, 0.26);
+            ICON_ACTIVE
+        } else if hovered {
+            c.button_bg(btn.origin, btn.size, s, 0xFFFFFF, 0.10);
+            ICON_HOVER
+        } else {
+            ICON
+        };
+        c.icon(icon_font, btn.origin, btn.size, s, tool_icon_codepoint(btn.tool), color);
     }
 
+    // ---- simple icon buttons
+    let simple = [
+        (&toolbar.undo_button, ToolbarHit::Undo, ICON_UNDO, can_undo),
+        (&toolbar.redo_button, ToolbarHit::Redo, ICON_REDO, can_redo),
+        (&toolbar.pin_button, ToolbarHit::Pin, ICON_PIN, true),
+        (&toolbar.save_button, ToolbarHit::Save, ICON_SAVE, true),
+    ];
+    for (b, hit, ch, enabled) in simple {
+        let color = if !enabled {
+            ICON_DISABLED
+        } else if hover == hit {
+            c.button_bg(b.origin, b.size, s, 0xFFFFFF, 0.10);
+            ICON_HOVER
+        } else {
+            ICON
+        };
+        c.icon(icon_font, b.origin, b.size, s, ch, color);
+    }
+
+    // ---- cancel (×)
+    {
+        let b = &toolbar.cancel_button;
+        let color = if hover == ToolbarHit::Cancel {
+            c.button_bg(b.origin, b.size, s, 0xFFFFFF, 0.10);
+            ICON_HOVER
+        } else {
+            ICON
+        };
+        let (ox, oy) = (b.origin.0 as f32, b.origin.1 as f32);
+        let k = b.size.0 as f32 / BTN;
+        let t = 2.0 * s;
+        c.line(ox + 11.0 * k, oy + 11.0 * k, ox + 21.0 * k, oy + 21.0 * k, t, color);
+        c.line(ox + 21.0 * k, oy + 11.0 * k, ox + 11.0 * k, oy + 21.0 * k, t, color);
+    }
+    // ---- confirm (✓) — primary action
+    {
+        let b = &toolbar.confirm_button;
+        let bg = if hover == ToolbarHit::Confirm { ACCENT_HOVER } else { THEME_COLOR };
+        c.button_bg(b.origin, b.size, s, bg, 1.0);
+        let (ox, oy) = (b.origin.0 as f32, b.origin.1 as f32);
+        let k = b.size.0 as f32 / BTN;
+        let t = 2.4 * s;
+        c.line(ox + 10.0 * k, oy + 16.5 * k, ox + 14.2 * k, oy + 20.7 * k, t, 0xFFFFFF);
+        c.line(ox + 14.2 * k, oy + 20.7 * k, ox + 22.0 * k, oy + 12.0 * k, t, 0xFFFFFF);
+    }
+
+    // ---- style bar
+    if show_sub {
+        let colors_disabled = current_tool == Tool::Mosaic;
+        for btn in &toolbar.color_buttons {
+            // Snap centers + radii to whole pixels: fractional geometry
+            // smears every edge across two pixels and reads as blurry.
+            let (cx, cy) = snap_center(btn.origin, btn.size);
+            let r = (SWATCH_R * s).round();
+            let alpha = if colors_disabled { 0.3 } else { 1.0 };
+            let selected = !colors_disabled && btn.color == current_style.color;
+            let hovered = !colors_disabled && hover == ToolbarHit::Color(btn.color);
+            if selected {
+                // iOS-style: white ring with a dark gap separating it from
+                // the swatch, so the selected color stays fully visible.
+                c.disk(cx, cy, r + 3.5 * s, 0xFFFFFF, 1.0);
+                c.disk(cx, cy, r + 1.5 * s, SURFACE, 1.0);
+            } else if hovered {
+                c.disk(cx, cy, r + 3.5 * s, 0xFFFFFF, 0.28);
+                c.disk(cx, cy, r + 1.5 * s, SURFACE, 1.0);
+            }
+            c.disk(cx, cy, r, btn.color.argb(), alpha);
+        }
+        for btn in &toolbar.stroke_buttons {
+            let selected = btn.stroke == current_style.stroke;
+            let hovered = hover == ToolbarHit::Stroke(btn.stroke);
+            if selected {
+                c.button_bg(btn.origin, btn.size, s, 0xFFFFFF, 0.14);
+            } else if hovered {
+                c.button_bg(btn.origin, btn.size, s, 0xFFFFFF, 0.08);
+            }
+            let (cx, cy) = snap_center(btn.origin, btn.size);
+            let r = (match btn.stroke {
+                Stroke::Thin => 2.0,
+                Stroke::Medium => 3.5,
+                Stroke::Thick => 5.5,
+            } * s)
+                .round();
+            let col = if selected || hovered { 0xFFFFFF } else { STROKE_IDLE };
+            c.disk(cx, cy, r, col, 1.0);
+        }
+    }
+
+    // ---- keyboard hint badges
     if show_hints {
-        // Single-letter / digit hints anchored to bottom-right corner of each
-        // button. Renders as a tiny rounded-rect badge with monospace text.
         for btn in &toolbar.tool_buttons {
-            let label = tool_hint_char(btn.tool);
-            draw_hint_badge(buf, win_w, win_h, btn.origin, btn.size, label);
+            c.hint(label_font, btn.origin, btn.size, s, tool_hint_char(btn.tool));
         }
-        // Row 2 hints — only when row 2 is enabled (not Mosaic).
-        if current_tool != Tool::Mosaic {
+        if show_sub && current_tool != Tool::Mosaic {
             for (i, btn) in toolbar.color_buttons.iter().enumerate() {
-                let digit = match i { 0 => '1', 1 => '2', 2 => '3', _ => '4' };
-                draw_hint_badge(buf, win_w, win_h, btn.origin, btn.size, digit);
+                c.hint(label_font, btn.origin, btn.size, s, char::from(b'1' + i as u8));
             }
         }
     }
+}
+
+/// Center of a button, placed on a pixel center (x.5) when the shape's
+/// pixel-rounded radius makes that the crisp position — for our integer
+/// radii that's the pixel boundary, i.e. whole-number coordinates.
+fn snap_center(origin: (i32, i32), size: (i32, i32)) -> (f32, f32) {
+    (
+        (origin.0 as f32 + size.0 as f32 / 2.0).round(),
+        (origin.1 as f32 + size.1 as f32 / 2.0).round(),
+    )
 }
 
 fn tool_hint_char(tool: Tool) -> char {
@@ -366,365 +478,178 @@ fn tool_hint_char(tool: Tool) -> char {
     }
 }
 
-fn draw_hint_badge(
-    buf: &mut [u32],
-    win_w: u32,
-    win_h: u32,
-    button_origin: (i32, i32),
-    button_size: (i32, i32),
-    label: char,
-) {
-    // Badge size scales with UI but stays compact.
-    let badge_w = (10 * UI_SCALE).max(20);
-    let badge_h = (10 * UI_SCALE).max(20);
-    // Anchor at the button's bottom-right corner.
-    let bx = button_origin.0 + button_size.0 - badge_w;
-    let by = button_origin.1 + button_size.1 - badge_h;
-
-    // Semi-transparent dark background, rounded.
-    draw_pill(
-        buf, win_w, win_h,
-        (bx, by), (badge_w, badge_h),
-        2 * UI_SCALE,
-        0x000000,
-        0.7,
-    );
-
-    // Letter is hand-rendered using the same primitives the toolbar uses
-    // for its own icons (no font, no rasterizer dependency, fast).
-    draw_hint_glyph(buf, win_w, win_h, (bx, by), (badge_w, badge_h), label);
-}
-
-fn draw_hint_glyph(
-    buf: &mut [u32],
-    win_w: u32,
-    win_h: u32,
-    badge_origin: (i32, i32),
-    badge_size: (i32, i32),
-    label: char,
-) {
-    let pad = 4;
-    let cw = badge_size.0 - pad * 2;
-    let ch = badge_size.1 - pad * 2;
-    let x = badge_origin.0 + pad;
-    let y = badge_origin.1 + pad;
-    let s = 2; // stroke
-    let color = 0xFFFFFF;
-
-    match label {
-        'M' => {
-            // Two verticals + a V in the middle.
-            fill_rect(buf, win_w, win_h, x, y, s, ch, color);
-            fill_rect(buf, win_w, win_h, x + cw - s, y, s, ch, color);
-            stroke_line(buf, win_w, win_h, x, y, x + cw / 2, y + ch / 2, s, color);
-            stroke_line(buf, win_w, win_h, x + cw / 2, y + ch / 2, x + cw, y, s, color);
-        }
-        'A' => {
-            // Triangle outline + crossbar.
-            stroke_line(buf, win_w, win_h, x + cw / 2, y, x, y + ch, s, color);
-            stroke_line(buf, win_w, win_h, x + cw / 2, y, x + cw, y + ch, s, color);
-            fill_rect(buf, win_w, win_h, x + cw / 4, y + ch * 2 / 3, cw / 2, s, color);
-        }
-        'R' => {
-            // Vertical + top-half rect outline + leg.
-            fill_rect(buf, win_w, win_h, x, y, s, ch, color);
-            fill_rect(buf, win_w, win_h, x, y, cw, s, color);                       // top
-            fill_rect(buf, win_w, win_h, x + cw - s, y, s, ch / 2, color);          // right (top half)
-            fill_rect(buf, win_w, win_h, x, y + ch / 2 - s / 2, cw, s, color);      // middle
-            stroke_line(buf, win_w, win_h, x + cw / 2, y + ch / 2, x + cw, y + ch, s, color); // leg
-        }
-        'E' => {
-            fill_rect(buf, win_w, win_h, x, y, s, ch, color);                       // vertical
-            fill_rect(buf, win_w, win_h, x, y, cw, s, color);                       // top
-            fill_rect(buf, win_w, win_h, x, y + ch / 2 - s / 2, cw * 3 / 4, s, color); // middle
-            fill_rect(buf, win_w, win_h, x, y + ch - s, cw, s, color);              // bottom
-        }
-        'P' => {
-            fill_rect(buf, win_w, win_h, x, y, s, ch, color);                       // vertical
-            fill_rect(buf, win_w, win_h, x, y, cw, s, color);                       // top
-            fill_rect(buf, win_w, win_h, x + cw - s, y, s, ch / 2, color);          // right (top half)
-            fill_rect(buf, win_w, win_h, x, y + ch / 2 - s / 2, cw, s, color);      // middle
-        }
-        'T' => {
-            fill_rect(buf, win_w, win_h, x, y, cw, s, color);                       // top bar
-            fill_rect(buf, win_w, win_h, x + cw / 2 - s / 2, y, s, ch, color);      // vertical
-        }
-        'B' => {
-            fill_rect(buf, win_w, win_h, x, y, s, ch, color);                       // vertical
-            fill_rect(buf, win_w, win_h, x, y, cw, s, color);                       // top
-            fill_rect(buf, win_w, win_h, x + cw - s, y, s, ch / 2, color);          // right top
-            fill_rect(buf, win_w, win_h, x, y + ch / 2 - s / 2, cw, s, color);      // middle
-            fill_rect(buf, win_w, win_h, x + cw - s, y + ch / 2, s, ch / 2, color); // right bottom
-            fill_rect(buf, win_w, win_h, x, y + ch - s, cw, s, color);              // bottom
-        }
-        '1' => {
-            fill_rect(buf, win_w, win_h, x + cw / 2 - s / 2, y, s, ch, color);
-            // small foot
-            fill_rect(buf, win_w, win_h, x + cw / 4, y + ch - s, cw / 2, s, color);
-            // top serif
-            stroke_line(buf, win_w, win_h, x + cw / 4, y + ch / 4, x + cw / 2, y, s, color);
-        }
-        '2' => {
-            fill_rect(buf, win_w, win_h, x, y, cw, s, color);                       // top
-            fill_rect(buf, win_w, win_h, x + cw - s, y, s, ch / 2, color);          // right top
-            fill_rect(buf, win_w, win_h, x, y + ch / 2 - s / 2, cw, s, color);      // middle
-            fill_rect(buf, win_w, win_h, x, y + ch / 2, s, ch / 2, color);          // left bottom
-            fill_rect(buf, win_w, win_h, x, y + ch - s, cw, s, color);              // bottom
-        }
-        '3' => {
-            fill_rect(buf, win_w, win_h, x, y, cw, s, color);                       // top
-            fill_rect(buf, win_w, win_h, x + cw - s, y, s, ch, color);              // right
-            fill_rect(buf, win_w, win_h, x + cw / 4, y + ch / 2 - s / 2, cw * 3 / 4, s, color); // middle
-            fill_rect(buf, win_w, win_h, x, y + ch - s, cw, s, color);              // bottom
-        }
-        '4' => {
-            fill_rect(buf, win_w, win_h, x, y, s, ch / 2 + s, color);               // left top
-            fill_rect(buf, win_w, win_h, x + cw - s, y, s, ch, color);              // right
-            fill_rect(buf, win_w, win_h, x, y + ch / 2 - s / 2, cw, s, color);      // middle
-        }
-        _ => {} // unknown label — skip
-    }
-}
-
 /// Map a `Tool` to the Lucide glyph codepoint that represents it.
 fn tool_icon_codepoint(tool: Tool) -> char {
     match tool {
-        Tool::Move    => ICON_MOVE,
-        Tool::Arrow   => ICON_ARROW,
-        Tool::Rect    => ICON_SQUARE,
+        Tool::Move => ICON_MOVE,
+        Tool::Arrow => ICON_ARROW,
+        Tool::Rect => ICON_SQUARE,
         Tool::Ellipse => ICON_CIRCLE,
-        Tool::Pen     => ICON_PENCIL,
-        Tool::Text    => ICON_TYPE,
-        Tool::Mosaic  => ICON_GRID_2X2,
+        Tool::Pen => ICON_PENCIL,
+        Tool::Text => ICON_TYPE,
+        Tool::Mosaic => ICON_GRID_2X2,
     }
 }
 
-// --- primitive drawing helpers (all operate on softbuffer ARGB u32) ---
-// Used by the toolbar pill background, the row-2 color/stroke swatches, and
-// the hint-badge glyphs. Tool icons themselves are rendered via `IconFont`
-// (see `src/icon_font.rs`).
+// ---- drawing primitives -------------------------------------------------------
 
-fn put(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, color: u32) {
-    if x >= 0 && y >= 0 && x < w as i32 && y < h as i32 {
-        buf[(y as u32 * w + x as u32) as usize] = color;
-    }
+pub(crate) struct Canvas<'a> {
+    pub buf: &'a mut [u32],
+    pub w: u32,
+    pub h: u32,
 }
 
-/// Write `color` at (x, y) blended with the existing pixel by `coverage`
-/// (0.0 = transparent, 1.0 = fully opaque). Clips to buffer bounds.
-fn put_blend(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, color: u32, coverage: f32) {
-    if coverage <= 0.0 || x < 0 || y < 0 || x >= w as i32 || y >= h as i32 {
-        return;
-    }
-    let idx = (y as u32 * w + x as u32) as usize;
-    let bg = buf[idx];
-    let a = coverage.clamp(0.0, 1.0);
-    let inv = 1.0 - a;
-    let fr = ((color >> 16) & 0xFF) as f32;
-    let fg = ((color >> 8) & 0xFF) as f32;
-    let fb = (color & 0xFF) as f32;
-    let br = ((bg >> 16) & 0xFF) as f32;
-    let bgc = ((bg >> 8) & 0xFF) as f32;
-    let bb = (bg & 0xFF) as f32;
-    let r = (fr * a + br * inv) as u32;
-    let g = (fg * a + bgc * inv) as u32;
-    let b = (fb * a + bb * inv) as u32;
-    buf[idx] = (r << 16) | (g << 8) | b;
+/// Signed distance from (px, py) to a rounded rect (negative = inside).
+#[inline]
+fn sdf_rrect(px: f32, py: f32, x: f32, y: f32, w: f32, h: f32, r: f32) -> f32 {
+    let (hw, hh) = (w / 2.0, h / 2.0);
+    let r = r.min(hw).min(hh).max(0.0);
+    let qx = (px - (x + hw)).abs() - (hw - r);
+    let qy = (py - (y + hh)).abs() - (hh - r);
+    let ox = qx.max(0.0);
+    let oy = qy.max(0.0);
+    (ox * ox + oy * oy).sqrt() + qx.max(qy).min(0.0) - r
 }
 
-#[allow(clippy::too_many_arguments)]
-fn fill_rect(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, rw: i32, rh: i32, color: u32) {
-    for dy in 0..rh {
-        for dx in 0..rw {
-            put(buf, w, h, x + dx, y + dy, color);
+impl Canvas<'_> {
+    #[inline]
+    pub(crate) fn blend(&mut self, x: i32, y: i32, color: u32, a: f32) {
+        if a <= 0.0 || x < 0 || y < 0 || x >= self.w as i32 || y >= self.h as i32 {
+            return;
         }
+        let idx = (y as u32 * self.w + x as u32) as usize;
+        let bg = self.buf[idx];
+        let a = a.min(1.0);
+        let inv = 1.0 - a;
+        let ch = |sh: u32| {
+            let f = ((color >> sh) & 0xFF) as f32;
+            let b = ((bg >> sh) & 0xFF) as f32;
+            ((f * a + b * inv) as u32).min(255)
+        };
+        self.buf[idx] = (ch(16) << 16) | (ch(8) << 8) | ch(0);
     }
-}
 
-fn fill_disk(buf: &mut [u32], w: u32, h: u32, cx: f64, cy: f64, r: f64, color: u32) {
-    if r <= 0.0 { return; }
-    let r_ceil = (r + 1.0).ceil() as i32;
-    let cx_i = cx.round() as i32;
-    let cy_i = cy.round() as i32;
-    let cx_f = cx - cx_i as f64;
-    let cy_f = cy - cy_i as f64;
-    for dy in -r_ceil..=r_ceil {
-        for dx in -r_ceil..=r_ceil {
-            let fx = dx as f64 - cx_f;
-            let fy = dy as f64 - cy_f;
-            let d = (fx * fx + fy * fy).sqrt();
-            // Linear coverage at the edge: 1.0 well inside, 0.0 well outside,
-            // ramp over a 1-pixel band centered on the boundary.
-            let coverage = (r + 0.5 - d).clamp(0.0, 1.0) as f32;
-            if coverage > 0.0 {
-                put_blend(buf, w, h, cx_i + dx, cy_i + dy, color, coverage);
+    /// Iterate pixels in a float rect's bounding box, calling `f(px, py)`
+    /// with the pixel-center coordinates.
+    fn for_box(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, mut f: impl FnMut(&mut Self, i32, i32, f32, f32)) {
+        let xa = (x0.floor() as i32).max(0);
+        let ya = (y0.floor() as i32).max(0);
+        let xb = (x1.ceil() as i32).min(self.w as i32 - 1);
+        let yb = (y1.ceil() as i32).min(self.h as i32 - 1);
+        for y in ya..=yb {
+            for x in xa..=xb {
+                f(self, x, y, x as f32 + 0.5, y as f32 + 0.5);
             }
         }
     }
-}
 
-fn mix_argb(fg: u32, bg: u32, alpha_to_bg: f32) -> u32 {
-    let lerp = |a: u32, b: u32| {
-        let af = a as f32 * (1.0 - alpha_to_bg);
-        let bf = b as f32 * alpha_to_bg;
-        (af + bf) as u32
-    };
-    let r = lerp((fg >> 16) & 0xFF, (bg >> 16) & 0xFF);
-    let g = lerp((fg >>  8) & 0xFF, (bg >>  8) & 0xFF);
-    let b = lerp( fg        & 0xFF,  bg        & 0xFF);
-    (r << 16) | (g << 8) | b
-}
-
-#[allow(clippy::too_many_arguments)]
-fn stroke_line(
-    buf: &mut [u32],
-    w: u32,
-    h: u32,
-    x0: i32,
-    y0: i32,
-    x1: i32,
-    y1: i32,
-    thickness: i32,
-    color: u32,
-) {
-    // Per-pixel distance-coverage AA: avoid the speckling/half-transparency
-    // that stamping AA disks along a path produces when overlap accumulation
-    // never reaches 1.0 coverage.
-    let half_t = thickness as f64 / 2.0;
-    let fx0 = x0 as f64;
-    let fy0 = y0 as f64;
-    let fx1 = x1 as f64;
-    let fy1 = y1 as f64;
-    let dx = fx1 - fx0;
-    let dy = fy1 - fy0;
-    let len2 = dx * dx + dy * dy;
-    if len2 < 0.0001 {
-        // Degenerate: just draw a disk at the start.
-        fill_disk(buf, w, h, fx0, fy0, half_t, color);
-        return;
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fill_rrect(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, color: u32, alpha: f32) {
+        self.for_box(x - 1.0, y - 1.0, x + w + 1.0, y + h + 1.0, |c, ix, iy, px, py| {
+            let d = sdf_rrect(px, py, x, y, w, h, r);
+            let cov = (0.5 - d).clamp(0.0, 1.0);
+            c.blend(ix, iy, color, cov * alpha);
+        });
     }
-    let bound_min_x = (fx0.min(fx1) - half_t - 1.0).floor() as i32;
-    let bound_max_x = (fx0.max(fx1) + half_t + 1.0).ceil() as i32;
-    let bound_min_y = (fy0.min(fy1) - half_t - 1.0).floor() as i32;
-    let bound_max_y = (fy0.max(fy1) + half_t + 1.0).ceil() as i32;
 
-    for y in bound_min_y..=bound_max_y {
-        for x in bound_min_x..=bound_max_x {
-            let px = x as f64 + 0.5;
-            let py = y as f64 + 0.5;
-            // Project pixel center onto segment; clamp to [0, 1] for rounded caps.
-            let t = ((px - fx0) * dx + (py - fy0) * dy) / len2;
-            let tc = t.clamp(0.0, 1.0);
-            let proj_x = fx0 + tc * dx;
-            let proj_y = fy0 + tc * dy;
-            let ddx = px - proj_x;
-            let ddy = py - proj_y;
-            let dist = (ddx * ddx + ddy * ddy).sqrt();
-            let coverage = (half_t + 0.5 - dist).clamp(0.0, 1.0) as f32;
-            if coverage > 0.0 {
-                put_blend(buf, w, h, x, y, color, coverage);
+    /// Bar surface: soft drop shadow, translucent fill, hairline border.
+    pub(crate) fn surface(&mut self, origin: (i32, i32), size: (i32, i32), r: f32, s: f32) {
+        let (x, y, w, h) = (origin.0 as f32, origin.1 as f32, size.0 as f32, size.1 as f32);
+        // Shadow: offset down, quadratic falloff over `blur`.
+        let blur = 14.0 * s;
+        let oy = 4.0 * s;
+        self.for_box(x - blur, y - blur + oy, x + w + blur, y + h + blur + oy, |c, ix, iy, px, py| {
+            let d = sdf_rrect(px, py - oy, x, y, w, h, r);
+            if d >= blur {
+                return;
             }
-        }
+            let t = ((d + blur * 0.25) / (blur * 1.25)).clamp(0.0, 1.0);
+            let a = 0.45 * (1.0 - t) * (1.0 - t);
+            c.blend(ix, iy, 0x000000, a);
+        });
+        // Fill + 1pt inner border in one pass.
+        let bw = s.max(1.0);
+        self.for_box(x - 1.0, y - 1.0, x + w + 1.0, y + h + 1.0, |c, ix, iy, px, py| {
+            let d = sdf_rrect(px, py, x, y, w, h, r);
+            let fill = (0.5 - d).clamp(0.0, 1.0);
+            if fill <= 0.0 {
+                return;
+            }
+            c.blend(ix, iy, SURFACE, fill * SURFACE_ALPHA);
+            let border = fill - (0.5 - (d + bw)).clamp(0.0, 1.0);
+            c.blend(ix, iy, BORDER, border * BORDER_ALPHA);
+        });
     }
-}
 
-#[allow(clippy::too_many_arguments)]
-fn stroke_ellipse(
-    buf: &mut [u32],
-    w: u32,
-    h: u32,
-    cx: i32,
-    cy: i32,
-    rx: f64,
-    ry: f64,
-    thickness: i32,
-    color: u32,
-) {
-    // Per-pixel distance-coverage AA: each pixel contributes once with its
-    // proper coverage. No path-stamping, no overlap accumulation.
-    let half_t = thickness as f64 / 2.0;
-    let cxf = cx as f64;
-    let cyf = cy as f64;
-    let min_r = rx.min(ry);
-    // Bounding box: ellipse extents + half-thickness + 1 px AA bleed.
-    let bound_x_min = (cxf - rx - half_t - 1.0).floor() as i32;
-    let bound_x_max = (cxf + rx + half_t + 1.0).ceil() as i32;
-    let bound_y_min = (cyf - ry - half_t - 1.0).floor() as i32;
-    let bound_y_max = (cyf + ry + half_t + 1.0).ceil() as i32;
-
-    for y in bound_y_min..=bound_y_max {
-        for x in bound_x_min..=bound_x_max {
-            // Sample at pixel center.
-            let px = x as f64 + 0.5;
-            let py = y as f64 + 0.5;
-            // Normalized distance to the ellipse perimeter (perimeter at r_norm == 1).
-            let nx = (px - cxf) / rx;
-            let ny = (py - cyf) / ry;
-            let r_norm = (nx * nx + ny * ny).sqrt();
-            // Approximate Euclidean distance to perimeter using min-radius scale.
-            // Exact distance requires a quartic; this is visually correct for
-            // mildly-eccentric ellipses (our icons + user-drawn marks).
-            let dist = (r_norm - 1.0).abs() * min_r;
-            let coverage = (half_t + 0.5 - dist).clamp(0.0, 1.0) as f32;
-            if coverage > 0.0 {
-                put_blend(buf, w, h, x, y, color, coverage);
-            }
-        }
+    fn button_bg(&mut self, origin: (i32, i32), size: (i32, i32), s: f32, color: u32, alpha: f32) {
+        self.fill_rrect(
+            origin.0 as f32,
+            origin.1 as f32,
+            size.0 as f32,
+            size.1 as f32,
+            BTN_RADIUS * s * (size.0 as f32 / (BTN * s)).min(1.0),
+            color,
+            alpha,
+        );
     }
-}
 
-#[allow(clippy::too_many_arguments)]
-fn draw_pill(
-    buf: &mut [u32],
-    w: u32,
-    h: u32,
-    origin: (i32, i32),
-    size: (i32, i32),
-    radius: i32,
-    color_rgb: u32,
-    alpha: f32,
-) {
-    let (x, y) = origin;
-    let (rw, rh) = size;
-    let fr = ((color_rgb >> 16) & 0xFF) as f32;
-    let fg = ((color_rgb >> 8) & 0xFF) as f32;
-    let fb = (color_rgb & 0xFF) as f32;
-    for dy in 0..rh {
-        for dx in 0..rw {
-            let in_corner_tl = dx < radius && dy < radius;
-            let in_corner_tr = dx >= rw - radius && dy < radius;
-            let in_corner_bl = dx < radius && dy >= rh - radius;
-            let in_corner_br = dx >= rw - radius && dy >= rh - radius;
-            // Compute per-pixel coverage at corners; 1.0 elsewhere.
-            let mut corner_coverage = 1.0_f32;
-            if in_corner_tl || in_corner_tr || in_corner_bl || in_corner_br {
-                let cx = if dx < radius { radius } else { rw - radius - 1 };
-                let cy = if dy < radius { radius } else { rh - radius - 1 };
-                let fx = (dx - cx) as f64;
-                let fy = (dy - cy) as f64;
-                let d = (fx * fx + fy * fy).sqrt();
-                let cov = (radius as f64 + 0.5 - d).clamp(0.0, 1.0);
-                if cov <= 0.0 {
-                    continue;
-                }
-                corner_coverage = cov as f32;
-            }
-            let px = x + dx;
-            let py = y + dy;
-            if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 {
-                continue;
-            }
-            let idx = (py as u32 * w + px as u32) as usize;
-            let bg = buf[idx];
-            let br = ((bg >> 16) & 0xFF) as f32;
-            let bgc = ((bg >> 8) & 0xFF) as f32;
-            let bb = (bg & 0xFF) as f32;
-            let effective_alpha = alpha * corner_coverage;
-            let r = (fr * effective_alpha + br * (1.0 - effective_alpha)) as u32;
-            let g = (fg * effective_alpha + bgc * (1.0 - effective_alpha)) as u32;
-            let b = (fb * effective_alpha + bb * (1.0 - effective_alpha)) as u32;
-            buf[idx] = (r << 16) | (g << 8) | b;
-        }
+    #[allow(clippy::too_many_arguments)]
+    fn icon(
+        &mut self,
+        font: &mut crate::icon_font::IconFont,
+        origin: (i32, i32),
+        size: (i32, i32),
+        s: f32,
+        ch: char,
+        color: u32,
+    ) {
+        // render_centered draws the glyph at 85% of the box it's given.
+        let ib = (ICON_PT * s / 0.85).round() as i32;
+        let o = (origin.0 + (size.0 - ib) / 2, origin.1 + (size.1 - ib) / 2);
+        font.render_centered(self.buf, self.w, self.h, o, ib, ch, color);
+    }
+
+    pub(crate) fn disk(&mut self, cx: f32, cy: f32, r: f32, color: u32, alpha: f32) {
+        self.for_box(cx - r - 1.0, cy - r - 1.0, cx + r + 1.0, cy + r + 1.0, |c, ix, iy, px, py| {
+            let d = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt() - r;
+            c.blend(ix, iy, color, (0.5 - d).clamp(0.0, 1.0) * alpha);
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, width: f32, color: u32) {
+        let hw = width / 2.0;
+        let (dx, dy) = (x1 - x0, y1 - y0);
+        let len2 = (dx * dx + dy * dy).max(1e-6);
+        self.for_box(
+            x0.min(x1) - hw - 1.0,
+            y0.min(y1) - hw - 1.0,
+            x0.max(x1) + hw + 1.0,
+            y0.max(y1) + hw + 1.0,
+            |c, ix, iy, px, py| {
+                let t = (((px - x0) * dx + (py - y0) * dy) / len2).clamp(0.0, 1.0);
+                let (qx, qy) = (x0 + t * dx - px, y0 + t * dy - py);
+                let d = (qx * qx + qy * qy).sqrt() - hw;
+                c.blend(ix, iy, color, (0.5 - d).clamp(0.0, 1.0));
+            },
+        );
+    }
+
+    /// Small accent badge with a keyboard-shortcut glyph at the button's
+    /// bottom-right corner.
+    fn hint(&mut self, font: &mut crate::text::Font, origin: (i32, i32), size: (i32, i32), s: f32, ch: char) {
+        let bw = 14.0 * s;
+        let bx = (origin.0 + size.0) as f32 - bw + 2.0 * s;
+        let by = (origin.1 + size.1) as f32 - bw + 2.0 * s;
+        self.fill_rrect(bx, by, bw, bw, 4.0 * s, 0x000000, 0.35);
+        self.fill_rrect(bx + 0.5 * s, by + 0.5 * s, bw - s, bw - s, 3.5 * s, THEME_COLOR, 1.0);
+        let fpx = 10.0 * s;
+        let mut tmp = [0u8; 4];
+        let text = ch.encode_utf8(&mut tmp);
+        let tw = font.measure_label(text, fpx);
+        let tx = (bx + (bw - tw) / 2.0).round() as i32;
+        let ty = (by + (bw - fpx) / 2.0 - 0.5 * s).round() as i32;
+        font.render_text(self.buf, self.w, self.h, tx, ty, text, fpx, 0xFFFFFF);
     }
 }
 
@@ -736,7 +661,7 @@ mod tests {
 
     #[test]
     fn layout_below_default() {
-        let t = Toolbar::layout(sel(), (1440, 900));
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
         assert!(t.origin.1 > sel().y + sel().h);
         assert_eq!(t.tool_buttons.len(), 7);
         assert_eq!(t.tool_buttons[0].tool, Tool::Move);
@@ -746,13 +671,13 @@ mod tests {
     #[test]
     fn layout_flips_above_when_low() {
         let s = Rect { x: 100, y: 800, w: 300, h: 90 };
-        let t = Toolbar::layout(s, (1440, 900));
+        let t = Toolbar::layout(s, (1440, 900), 1.0);
         assert!(t.origin.1 < s.y);
     }
 
     #[test]
     fn hit_tool_button() {
-        let t = Toolbar::layout(sel(), (1440, 900));
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
         let btn = &t.tool_buttons[1];
         let c = (btn.origin.0 + 5, btn.origin.1 + 5);
         assert_eq!(t.hit_with_tool(c, Tool::Move), ToolbarHit::Tool(Tool::Arrow));
@@ -760,7 +685,7 @@ mod tests {
 
     #[test]
     fn hit_undo() {
-        let t = Toolbar::layout(sel(), (1440, 900));
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
         let u = &t.undo_button;
         let c = (u.origin.0 + 3, u.origin.1 + 3);
         assert_eq!(t.hit_with_tool(c, Tool::Move), ToolbarHit::Undo);
@@ -768,21 +693,21 @@ mod tests {
 
     #[test]
     fn hit_none_outside() {
-        let t = Toolbar::layout(sel(), (1440, 900));
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
         assert_eq!(t.hit_with_tool((10, 10), Tool::Move), ToolbarHit::None);
     }
 
     #[test]
     fn contains_inside_bar() {
-        let t = Toolbar::layout(sel(), (1440, 900));
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
         let c = (t.origin.0 + t.size.0 / 2, t.origin.1 + t.size.1 / 2);
-        assert!(t.contains(c));
-        assert!(!t.contains((10, 10)));
+        assert!(t.contains(c, Tool::Arrow));
+        assert!(!t.contains((10, 10), Tool::Arrow));
     }
 
     #[test]
     fn tool_order_includes_pen_and_text() {
-        let t = Toolbar::layout(sel(), (1440, 900));
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
         let tools: Vec<Tool> = t.tool_buttons.iter().map(|b| b.tool).collect();
         assert_eq!(tools, vec![
             Tool::Move, Tool::Arrow, Tool::Rect, Tool::Ellipse,
@@ -792,7 +717,7 @@ mod tests {
 
     #[test]
     fn layout_has_color_and_stroke_buttons() {
-        let t = Toolbar::layout(sel(), (1440, 900));
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
         assert_eq!(t.color_buttons.len(), 4);
         assert_eq!(t.stroke_buttons.len(), 3);
         // Row 2 sits below row 1.
@@ -802,8 +727,37 @@ mod tests {
     }
 
     #[test]
+    fn style_bar_hidden_for_move_tool() {
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let red = &t.color_buttons[0];
+        let c = (red.origin.0 + 4, red.origin.1 + 4);
+        assert_eq!(t.hit_with_tool(c, Tool::Move), ToolbarHit::None);
+        assert!(!t.contains(c, Tool::Move));
+        assert_eq!(t.hit_with_tool(c, Tool::Rect), ToolbarHit::Color(Color::Red));
+    }
+
+    #[test]
+    fn cancel_and_confirm_are_last() {
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        assert!(t.cancel_button.origin.0 > t.save_button.origin.0);
+        assert!(t.confirm_button.origin.0 > t.cancel_button.origin.0);
+        let c = (t.confirm_button.origin.0 + 3, t.confirm_button.origin.1 + 3);
+        assert_eq!(t.hit_with_tool(c, Tool::Move), ToolbarHit::Confirm);
+        let x = (t.cancel_button.origin.0 + 3, t.cancel_button.origin.1 + 3);
+        assert_eq!(t.hit_with_tool(x, Tool::Move), ToolbarHit::Cancel);
+    }
+
+    #[test]
+    fn layout_scales_with_display() {
+        let a = Toolbar::layout(sel(), (4000, 3000), 1.0);
+        let b = Toolbar::layout(sel(), (4000, 3000), 2.0);
+        assert!((b.main.1 .0 - 2 * a.main.1 .0).abs() <= 6);
+        assert!((b.main.1 .1 - 2 * a.main.1 .1).abs() <= 2);
+    }
+
+    #[test]
     fn hit_returns_color_and_stroke() {
-        let t = Toolbar::layout(sel(), (1440, 900));
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
         let yellow = &t.color_buttons[1];
         let c = (yellow.origin.0 + 4, yellow.origin.1 + 4);
         assert_eq!(t.hit_with_tool(c, Tool::Arrow), ToolbarHit::Color(Color::Yellow));
@@ -814,7 +768,7 @@ mod tests {
 
     #[test]
     fn hit_row2_color_returns_none_when_mosaic_active() {
-        let t = Toolbar::layout(sel(), (1440, 900));
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
         let yellow = &t.color_buttons[1];
         let c = (yellow.origin.0 + 4, yellow.origin.1 + 4);
         assert_eq!(t.hit_with_tool(c, Tool::Mosaic), ToolbarHit::None);
@@ -823,7 +777,7 @@ mod tests {
     #[test]
     fn hit_stroke_under_mosaic_returns_stroke() {
         // Stroke section is interactive under Mosaic (controls block size).
-        let t = Toolbar::layout(sel(), (1440, 900));
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
         let thick = &t.stroke_buttons[2];
         let s = (thick.origin.0 + 4, thick.origin.1 + 4);
         assert_eq!(t.hit_with_tool(s, Tool::Mosaic), ToolbarHit::Stroke(Stroke::Thick));
@@ -831,18 +785,18 @@ mod tests {
 
     #[test]
     fn toolbar_has_pin_button() {
-        let t = Toolbar::layout(sel(), (1440, 900));
-        // Pin button sits to the right of redo on row 1.
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        // Pin button sits to the right of redo.
         assert!(t.pin_button.origin.0 > t.redo_button.origin.0);
         // Same vertical center as the rest of row 1.
         assert_eq!(t.pin_button.origin.1, t.redo_button.origin.1);
         // Same size as other icons.
-        assert_eq!(t.pin_button.size, (ICON_SIZE, ICON_SIZE));
+        assert_eq!(t.pin_button.size, t.undo_button.size);
     }
 
     #[test]
     fn hit_pin_button() {
-        let t = Toolbar::layout(sel(), (1440, 900));
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
         let p = &t.pin_button;
         let c = (p.origin.0 + 5, p.origin.1 + 5);
         assert_eq!(t.hit_with_tool(c, Tool::Move), ToolbarHit::Pin);
@@ -851,7 +805,7 @@ mod tests {
     #[test]
     fn hit_pin_button_works_under_mosaic() {
         // Row 2 is greyed under Mosaic, but row 1 (incl. pin) stays clickable.
-        let t = Toolbar::layout(sel(), (1440, 900));
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
         let p = &t.pin_button;
         let c = (p.origin.0 + 5, p.origin.1 + 5);
         assert_eq!(t.hit_with_tool(c, Tool::Mosaic), ToolbarHit::Pin);
@@ -859,16 +813,16 @@ mod tests {
 
     #[test]
     fn toolbar_has_save_button() {
-        let t = Toolbar::layout(sel(), (1440, 900));
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
         // Save sits to the right of pin on row 1.
         assert!(t.save_button.origin.0 > t.pin_button.origin.0);
         assert_eq!(t.save_button.origin.1, t.pin_button.origin.1);
-        assert_eq!(t.save_button.size, (ICON_SIZE, ICON_SIZE));
+        assert_eq!(t.save_button.size, t.pin_button.size);
     }
 
     #[test]
     fn hit_save_button() {
-        let t = Toolbar::layout(sel(), (1440, 900));
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
         let s = &t.save_button;
         let c = (s.origin.0 + 5, s.origin.1 + 5);
         assert_eq!(t.hit_with_tool(c, Tool::Move), ToolbarHit::Save);
@@ -877,9 +831,11 @@ mod tests {
     #[test]
     fn hit_save_button_works_under_mosaic() {
         // Save (row 1) stays clickable even under Mosaic.
-        let t = Toolbar::layout(sel(), (1440, 900));
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
         let s = &t.save_button;
         let c = (s.origin.0 + 5, s.origin.1 + 5);
         assert_eq!(t.hit_with_tool(c, Tool::Mosaic), ToolbarHit::Save);
     }
 }
+
+

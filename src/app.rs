@@ -27,10 +27,21 @@ pub enum UserEvent {
     ReloadConfig,
     /// "Quit" menu item clicked.
     Quit,
+    /// The native text editor consumed Return / Escape and wants the overlay
+    /// to process its commit / cancel request.
+    TextEditorWake,
+    /// Ask the overlay to repaint (e.g. a transient badge expired).
+    Redraw,
 }
 
 pub struct App {
     overlay: Option<Overlay>,
+    /// Reusable hidden overlay window (+ surface) — see `OverlayHost`.
+    /// `None` while a session holds it (or before first creation).
+    host: Option<crate::overlay::OverlayHost>,
+    /// Label / icon fonts, kept across sessions so their glyph caches stay
+    /// warm. Moved into the overlay while a session is active.
+    fonts: Option<(crate::text::Font, crate::icon_font::IconFont)>,
     pins: Vec<crate::pin::PinWindow>,
     pin_window_ids: HashMap<WindowId, usize>,
     config: crate::config::Config,
@@ -51,6 +62,8 @@ impl App {
         let fullscreen_label = config.hotkey.fullscreen.raw.clone();
         Self {
             overlay: None,
+            host: None,
+            fonts: None,
             pins: Vec::new(),
             pin_window_ids: HashMap::new(),
             config,
@@ -112,11 +125,89 @@ impl App {
         if self.overlay.is_some() {
             return Ok(());
         }
-        let (frame, geom) = capture::capture_at_cursor()?;
-        let overlay = Overlay::create(event_loop, frame, &geom)?;
-        overlay.window.request_redraw();
+        let debug = std::env::var_os("QUICKSHOT_DEBUG").is_some();
+        let t0 = std::time::Instant::now();
+
+        let geom = capture::monitor_at_cursor()?;
+        // Window enumeration (snap targets) runs in parallel with the capture
+        // + pixel conversion. Snap rects are scaled with the monitor's backing
+        // scale, which equals the overlay window's scale factor once placed.
+        let (captured, window_list) = std::thread::scope(|s| {
+            let enum_handle = s.spawn(|| {
+                let t = std::time::Instant::now();
+                let l = crate::overlay::snap::enumerate_windows(&geom, std::process::id(), geom.scale as f32);
+                if debug {
+                    eprintln!("QuickShot timing: enumerate_windows {:?}", t.elapsed());
+                }
+                l
+            });
+            let cap = capture::capture(&geom, true);
+            (cap, enum_handle.join().unwrap_or_default())
+        });
+        let captured = captured?;
+        let t_capture = t0.elapsed();
+
+        let host = match self.host.take() {
+            Some(h) => h,
+            None => crate::overlay::OverlayHost::new(event_loop)?,
+        };
+        let (font, icon_font) = self.fonts.take().unwrap_or_else(|| {
+            (crate::text::Font::embedded(), crate::icon_font::IconFont::embedded())
+        });
+        let t_prep = t0.elapsed();
+        let overlay = Overlay::begin(
+            host,
+            captured,
+            &geom,
+            window_list,
+            font,
+            icon_font,
+            self.proxy.clone(),
+        )?;
         self.overlay = Some(overlay);
+        if debug {
+            eprintln!(
+                "QuickShot timing: capture+enum {:?}, host/fonts ready {:?}, overlay visible {:?}",
+                t_capture,
+                t_prep,
+                t0.elapsed()
+            );
+        }
         Ok(())
+    }
+
+    /// End the active overlay session, keeping the window + fonts for reuse.
+    fn close_overlay(&mut self) {
+        if let Some(overlay) = self.overlay.take() {
+            let (host, font, icon) = overlay.into_parts();
+            self.host = Some(host);
+            self.fonts = Some((font, icon));
+        }
+    }
+
+    /// Pre-create the hidden overlay window and fonts, and warm up the
+    /// capture path, so the first hotkey press is as fast as later ones.
+    fn warm_up(&mut self, event_loop: &ActiveEventLoop) {
+        if self.host.is_none() {
+            match crate::overlay::OverlayHost::new(event_loop) {
+                Ok(h) => self.host = Some(h),
+                Err(e) => eprintln!("QuickShot: overlay pre-create failed: {e:?}"),
+            }
+        }
+        if self.fonts.is_none() {
+            let mut font = crate::text::Font::embedded();
+            // Load the platform annotation font now (~45 ms cold on macOS)
+            // instead of on the first Text-tool click.
+            let _ = font.text_mask("你A", 24.0, 0x00FF_3B30);
+            self.fonts = Some((font, crate::icon_font::IconFont::embedded()));
+        }
+        std::thread::spawn(|| {
+            let t = std::time::Instant::now();
+            capture::warm_up();
+            if std::env::var_os("QUICKSHOT_DEBUG").is_some() {
+                eprintln!("QuickShot: capture warm-up took {:?}", t.elapsed());
+            }
+        });
     }
 
     /// Copy `img` to the clipboard and save as PNG if config.save.enabled.
@@ -148,12 +239,14 @@ impl App {
     }
 
     fn confirm(&mut self, rect: Rect) {
-        let Some(mut overlay) = self.overlay.take() else {
+        let Some(overlay) = self.overlay.as_mut() else {
             return;
         };
         let final_image = overlay.flatten_for_export(rect);
+        // Hide first so the overlay disappears immediately; clipboard + disk
+        // writes happen after.
+        self.close_overlay();
         self.export_image(&final_image, "");
-        drop(overlay);
     }
 
     /// Open a native save dialog and write the cropped+annotated image to the
@@ -213,7 +306,7 @@ impl App {
                     Err(e) => eprintln!("save error: {e:?}"),
                 }
                 // Saved — close the overlay.
-                self.overlay = None;
+                self.close_overlay();
             }
             None => {
                 // Cancelled — restore overlay level so it pops back on top.
@@ -223,18 +316,16 @@ impl App {
                 println!("save cancelled");
             }
         }
-        // window_handle (the Rc clone) drops here. If we cleared self.overlay,
-        // that's the last strong ref → NSWindow closes. If we didn't,
-        // self.overlay still holds it.
+        // window_handle (the Rc clone) drops here; the window itself lives on
+        // in the reusable OverlayHost.
     }
 
     fn pin(&mut self, rect: Rect, event_loop: &ActiveEventLoop) {
-        let Some(mut overlay) = self.overlay.take() else {
+        let Some(overlay) = self.overlay.as_mut() else {
             return;
         };
         let final_image = overlay.flatten_for_export(rect);
         let (img_w, img_h) = final_image.dimensions();
-        self.export_image(&final_image, "pinned");
 
         // Compute pin position + logical size.
         let scale_factor = overlay.scale_factor();
@@ -257,6 +348,8 @@ impl App {
             (img_w as f32 / scale_factor).round() as u32,
             (img_h as f32 / scale_factor).round() as u32,
         );
+        self.close_overlay();
+        self.export_image(&final_image, "pinned");
 
         match crate::pin::PinWindow::create(event_loop, final_image, screen_pos, logical_size) {
             Ok(pin_win) => {
@@ -267,8 +360,6 @@ impl App {
             }
             Err(e) => eprintln!("pin create error: {e:?}"),
         }
-
-        drop(overlay);
     }
 
     fn close_pin(&mut self, idx: usize) {
@@ -286,7 +377,7 @@ impl App {
     }
 
     fn cancel(&mut self) {
-        self.overlay = None;
+        self.close_overlay();
     }
 
     fn capture_full_screen(&mut self) {
@@ -294,7 +385,8 @@ impl App {
             return;
         }
         match capture::capture_at_cursor() {
-            Ok((frame, _geom)) => {
+            Ok((captured, _geom)) => {
+                let frame = captured.frame;
                 let (w, h) = frame.dimensions();
                 if let Err(e) = clipboard::put_image(&frame) {
                     eprintln!("clipboard error: {e:?}");
@@ -384,6 +476,7 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 Err(e) => eprintln!("QuickShot: tray install error: {e:?}"),
             }
+            self.warm_up(_event_loop);
         }
     }
 
@@ -402,7 +495,9 @@ impl ApplicationHandler<UserEvent> for App {
         // Try overlay first.
         if let Some(overlay) = self.overlay.as_mut() {
             if overlay.window.id() == id {
-                match overlay.handle_event(event) {
+                let outcome = overlay.handle_event(event);
+                overlay.poll_text_editor();
+                match outcome {
                     Outcome::Continue => {}
                     Outcome::Confirmed(rect) => self.confirm(rect),
                     Outcome::Pinned(rect) => self.pin(rect, event_loop),
@@ -442,6 +537,16 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::Quit => {
                 event_loop.exit();
+            }
+            UserEvent::Redraw => {
+                if let Some(overlay) = self.overlay.as_ref() {
+                    overlay.window.request_redraw();
+                }
+            }
+            UserEvent::TextEditorWake => {
+                if let Some(overlay) = self.overlay.as_mut() {
+                    overlay.poll_text_editor();
+                }
             }
         }
     }
@@ -484,7 +589,15 @@ fn set_macos_activation_policy_accessory() {
 
 #[cfg(target_os = "macos")]
 fn open_config_in_editor(path: &std::path::Path) -> std::io::Result<()> {
+    // `open` forwards our environment to the launched app. If QuickShot was
+    // started from a shell that has ELECTRON_RUN_AS_NODE set (common inside
+    // Electron-based terminals / agent tools), Electron editors such as
+    // VS Code / Cursor / Antigravity would run as plain Node, try to execute
+    // config.toml as JavaScript and exit instantly — "Edit Config" appears to
+    // do nothing. Strip the Electron mode variables before handing off.
     std::process::Command::new("open")
+        .env_remove("ELECTRON_RUN_AS_NODE")
+        .env_remove("ELECTRON_NO_ATTACH_CONSOLE")
         .arg(path)
         .spawn()
         .map(|_| ())

@@ -15,6 +15,12 @@ pub fn put_image(img: &RgbaImage) -> Result<()> {
     Ok(())
 }
 
+pub fn put_text(text: &str) -> Result<()> {
+    let mut cb = Clipboard::new().context("open clipboard")?;
+    cb.set_text(text.to_owned()).context("write text to clipboard")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -53,6 +53,7 @@ pub fn draw_background(buf: &mut [u32], w: u32, h: u32, frame: &RgbaImage) {
 /// The values are bit-for-bit identical to running `draw_background` followed
 /// by `apply_dim(.., None)`: swizzle drops each channel to 8 bits, then the
 /// `>> 1` halving matches the old `((px >> shift) & 0xFF) / 2`.
+#[cfg_attr(target_os = "macos", allow(dead_code))] // macOS fuses this into capture
 pub fn precompute_dimmed(frame: &RgbaImage) -> Vec<u32> {
     let raw = frame.as_raw();
     let (fw, fh) = frame.dimensions();
@@ -91,32 +92,63 @@ pub fn blit_background_dimmed(
         return;
     }
 
-    // Fast path: 1:1 mapping (the common case). One vectorizable memcpy…
-    buf.copy_from_slice(dimmed);
-
-    // …then re-brighten just the selection interior straight from the frame.
-    if let Some((ix, iy, iw, ih)) = inside {
-        if iw == 0 || ih == 0 {
-            return;
-        }
-        let raw = frame.as_raw();
-        let w_us = w as usize;
-        let fw_us = fw as usize;
-        let ix_us = ix.min(w) as usize;
-        let ix2_us = ix.saturating_add(iw).min(w) as usize;
-        let iy2 = iy.saturating_add(ih).min(h);
-        for y in iy..iy2 {
-            let y_us = y as usize;
-            let dst = &mut buf[y_us * w_us + ix_us..y_us * w_us + ix2_us];
-            let src_row = y_us * fw_us * 4;
-            for (dx, px) in dst.iter_mut().enumerate() {
-                let i = src_row + (ix_us + dx) * 4;
-                *px = ((raw[i] as u32) << 16)
-                    | ((raw[i + 1] as u32) << 8)
-                    | (raw[i + 2] as u32);
+    // Fast path: 1:1 mapping (the common case). Per row: memcpy the dimmed
+    // background, then re-brighten just the selection interior straight from
+    // the frame. Rows are split across a few threads — a full Retina frame
+    // is ~80 MB of traffic, which one core can't move within a 120 Hz budget.
+    let raw = frame.as_raw();
+    let w_us = w as usize;
+    let sel = inside.filter(|&(_, _, iw, ih)| iw > 0 && ih > 0).map(|(ix, iy, iw, ih)| {
+        (
+            ix.min(w) as usize,
+            ix.saturating_add(iw).min(w) as usize,
+            iy as usize,
+            iy.saturating_add(ih).min(h) as usize,
+        )
+    });
+    let paint_rows = |rows: &mut [u32], y0: usize| {
+        for (r, dst) in rows.chunks_exact_mut(w_us).enumerate() {
+            let y = y0 + r;
+            dst.copy_from_slice(&dimmed[y * w_us..(y + 1) * w_us]);
+            if let Some((x0, x1, sy0, sy1)) = sel {
+                if y >= sy0 && y < sy1 {
+                    let src = &raw[(y * w_us + x0) * 4..(y * w_us + x1) * 4];
+                    for (px, s) in dst[x0..x1].iter_mut().zip(src.chunks_exact(4)) {
+                        *px = ((s[0] as u32) << 16) | ((s[1] as u32) << 8) | (s[2] as u32);
+                    }
+                }
             }
         }
+    };
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, 4);
+    let rows_per = (h as usize).div_ceil(threads).max(1);
+    if threads == 1 || (w as usize * h as usize) < 1 << 20 {
+        paint_rows(buf, 0);
+        return;
     }
+    std::thread::scope(|s| {
+        for (i, chunk) in buf.chunks_mut(rows_per * w_us).enumerate() {
+            let paint_rows = &paint_rows;
+            s.spawn(move || paint_rows(chunk, i * rows_per));
+        }
+    });
+}
+
+/// `dst.copy_from_slice(src)` split across a few threads (a Retina frame is
+/// ~80 MB; one core's memcpy bandwidth alone eats most of a frame budget).
+pub fn par_copy(dst: &mut [u32], src: &[u32]) {
+    assert_eq!(dst.len(), src.len());
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, 4);
+    if threads == 1 || dst.len() < 1 << 20 {
+        dst.copy_from_slice(src);
+        return;
+    }
+    let chunk = dst.len().div_ceil(threads);
+    std::thread::scope(|s| {
+        for (d, sr) in dst.chunks_mut(chunk).zip(src.chunks(chunk)) {
+            s.spawn(move || d.copy_from_slice(sr));
+        }
+    });
 }
 
 /// Darken everything in `buf` except the optional `inside` rect (x, y, w, h).
@@ -372,37 +404,60 @@ pub fn draw_selection_outline(
     }
 }
 
-const MAG_SIZE: i32 = 120;
-const MAG_ZOOM: i32 = 4;
-const MAG_OFFSET: i32 = 20;
-const MAG_LABEL_H: i32 = 24;
-const MAG_FONT_PX: f32 = 14.0;
+// ---- magnifier (all in points; multiplied by the display scale) ----------
+/// Zoomed-pixel grid: MAG_CELLS × MAG_CELLS source pixels, each MAG_CELL pt.
+const MAG_CELLS: i32 = 17; // odd → a true center pixel
+const MAG_CELL: i32 = 10;
+const MAG_PAD: i32 = 6;
+const MAG_INFO_H: i32 = 50;
+const MAG_OFFSET: i32 = 22;
+const MAG_RADIUS: f32 = 12.0;
+const MAG_FONT_PX: f32 = 12.0;
+const MAG_FONT_SMALL_PX: f32 = 10.5;
+/// How long the "Copied" confirmation replaces the shortcut hint.
+pub const COPIED_BADGE_DURATION: std::time::Duration = std::time::Duration::from_millis(1200);
+
 
 /// Decide where to put the magnifier given cursor + window size.
 /// Default: bottom-right of cursor with a gap. Flip to the opposite side
 /// on each axis when the default would clip the window edge.
+#[cfg(test)]
 pub fn magnifier_position(
     cursor: (i32, i32),
     window_size: (u32, u32),
     mag_size: i32,
     offset: i32,
 ) -> (i32, i32) {
+    magnifier_position_wh(cursor, window_size, (mag_size, mag_size), offset)
+}
+
+fn magnifier_position_wh(
+    cursor: (i32, i32),
+    window_size: (u32, u32),
+    size: (i32, i32),
+    offset: i32,
+) -> (i32, i32) {
     let (ww, wh) = (window_size.0 as i32, window_size.1 as i32);
     let mut x = cursor.0 + offset;
     let mut y = cursor.1 + offset;
-    if x + mag_size >= ww {
-        x = cursor.0 - offset - mag_size;
+    if x + size.0 >= ww {
+        x = cursor.0 - offset - size.0;
     }
-    if y + mag_size >= wh {
-        y = cursor.1 - offset - mag_size;
+    if y + size.1 >= wh {
+        y = cursor.1 - offset - size.1;
     }
     (x.max(0), y.max(0))
 }
 
-/// `scale` is the window's DPI scale factor (1.0 on non-Retina, 2.0 on Retina).
-/// All logical-pixel constants (MAG_SIZE, MAG_OFFSET, MAG_LABEL_H, MAG_FONT_PX)
-/// are multiplied by scale to get physical pixels. MAG_ZOOM is kept as-is
-/// (it's a zoom ratio, not a size).
+/// Perceived luminance (0..255) of an 0x00RRGGBB color.
+fn luma(rgb: u32) -> u32 {
+    let (r, g, b) = ((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+    (r * 299 + g * 587 + b * 114) / 1000
+}
+
+/// Loupe shown while choosing a region: a rounded card with a crisp pixel
+/// grid zoom, a highlighted center pixel, a color chip + HEX value and the
+/// cursor coordinates. `scale` is the display backing scale.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_magnifier(
     buf: &mut [u32],
@@ -413,70 +468,211 @@ pub fn draw_magnifier(
     window_size: (u32, u32),
     font: &mut Font,
     scale: f32,
+    copied: bool,
 ) {
-    let mag_size = (MAG_SIZE as f32 * scale) as i32;
-    let offset = (MAG_OFFSET as f32 * scale) as i32;
-    let mag_label_h = (MAG_LABEL_H as f32 * scale) as i32;
-    let font_px = MAG_FONT_PX * scale;
+    let s = scale.max(0.5);
+    let px = |v: f32| (v * s).round() as i32;
+    let cell = px(MAG_CELL as f32).max(1);
+    let zoom = cell * MAG_CELLS; // physical zoom-area size (exact multiple of cell)
+    let pad = px(MAG_PAD as f32);
+    let info_h = px(MAG_INFO_H as f32);
+    let (cw, ch) = (zoom + 2 * pad, zoom + 2 * pad + info_h);
+    let offset = px(MAG_OFFSET as f32);
+    let (mx, my) = magnifier_position_wh(cursor, window_size, (cw, ch), offset);
 
-    let (mx, my) = magnifier_position(cursor, window_size, mag_size, offset);
     let (fw, fh) = frame.dimensions();
     let (ww, wh) = (window_size.0.max(1) as u64, window_size.1.max(1) as u64);
+    let cfx = ((cursor.0.max(0) as u64 * fw as u64 / ww) as i32).clamp(0, fw as i32 - 1);
+    let cfy = ((cursor.1.max(0) as u64 * fh as u64 / wh) as i32).clamp(0, fh as i32 - 1);
 
-    // Map cursor (window-space) to physical pixel coords in the frame.
-    let cfx = (cursor.0.max(0) as u64 * fw as u64 / ww) as i32;
-    let cfy = (cursor.1.max(0) as u64 * fh as u64 / wh) as i32;
-    let src_span = mag_size / MAG_ZOOM;
+    let mut c = crate::overlay::toolbar::Canvas { buf, w, h };
+    // Card: shadow + translucent dark surface + hairline border.
+    c.surface((mx, my), (cw, ch), MAG_RADIUS * s, s);
 
-    // 1 px white border + black backfill, then upscaled pixels, then crosshair, then label.
-    fill_square(buf, w, h, mx - 1, my - 1, mag_size + 2, 0x00FFFFFF);
-    fill_square(buf, w, h, mx,     my,     mag_size,     0x00000000);
-
-    for dy in 0..(mag_size - mag_label_h) {
-        for dx in 0..mag_size {
-            let sx = cfx - src_span / 2 + dx / MAG_ZOOM;
-            let sy = cfy - src_span / 2 + dy / MAG_ZOOM;
-            let sx = sx.clamp(0, fw as i32 - 1);
-            let sy = sy.clamp(0, fh as i32 - 1);
-            let p = frame.get_pixel(sx as u32, sy as u32);
-            let [r, g, b, _a] = p.0;
-            let px = mx + dx;
-            let py = my + dy;
-            if px < 0 || py < 0 || px >= w as i32 || py >= h as i32 { continue; }
-            buf[(py as u32 * w + px as u32) as usize] =
-                ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+    // ---- zoomed pixels (nearest neighbour, whole-cell blocks → crisp)
+    let (zx, zy) = (mx + pad, my + pad);
+    let half = MAG_CELLS / 2;
+    let raw = frame.as_raw();
+    let zr = (MAG_RADIUS - 4.0).max(2.0) * s; // inner corner radius
+    for gy in 0..MAG_CELLS {
+        let sy = (cfy - half + gy).clamp(0, fh as i32 - 1) as usize;
+        for gx in 0..MAG_CELLS {
+            let sx = (cfx - half + gx).clamp(0, fw as i32 - 1) as usize;
+            let i = (sy * fw as usize + sx) * 4;
+            let rgb = ((raw[i] as u32) << 16) | ((raw[i + 1] as u32) << 8) | raw[i + 2] as u32;
+            let (bx, by) = (zx + gx * cell, zy + gy * cell);
+            for yy in by..by + cell {
+                if yy < 0 || yy >= h as i32 {
+                    continue;
+                }
+                let row = (yy as u32 * w) as usize;
+                for xx in bx..bx + cell {
+                    if xx < 0 || xx >= w as i32 {
+                        continue;
+                    }
+                    // Round the zoom area's corners so it nests in the card.
+                    let corner = rrect_cov(xx as f32 + 0.5, yy as f32 + 0.5, zx as f32, zy as f32, zoom as f32, zoom as f32, zr);
+                    if corner >= 1.0 {
+                        c.buf[row + xx as usize] = rgb;
+                    } else if corner > 0.0 {
+                        c.blend(xx, yy, rgb, corner);
+                    }
+                }
+            }
+        }
+    }
+    // Subtle pixel grid (only when cells are big enough to read).
+    if cell >= 6 {
+        for k in 1..MAG_CELLS {
+            let gx = zx + k * cell;
+            let gy = zy + k * cell;
+            for t in 0..zoom {
+                c.blend(gx, zy + t, 0x000000, 0.10);
+                c.blend(zx + t, gy, 0x000000, 0.10);
+            }
         }
     }
 
-    // Center crosshair (1 px horizontal + 1 px vertical lines across the zoom area).
-    let cx = mx + mag_size / 2;
-    let cy = my + (src_span / 2) * MAG_ZOOM;
-    for dx in 0..mag_size {
-        let px = mx + dx;
-        if px < 0 || cy < 0 || px >= w as i32 || cy >= h as i32 { continue; }
-        buf[(cy as u32 * w + px as u32) as usize] = 0x0000FFFF; // cyan
-    }
-    for dy in 0..(mag_size - mag_label_h) {
-        let py = my + dy;
-        if cx < 0 || py < 0 || cx >= w as i32 || py >= h as i32 { continue; }
-        buf[(py as u32 * w + cx as u32) as usize] = 0x0000FFFF;
-    }
+    // ---- center pixel: contrasting double frame (dark + light) so it reads
+    // on any content.
+    let center = {
+        let i = (cfy as usize * fw as usize + cfx as usize) * 4;
+        ((raw[i] as u32) << 16) | ((raw[i + 1] as u32) << 8) | raw[i + 2] as u32
+    };
+    let (ccx, ccy) = (zx + half * cell, zy + half * cell);
+    let ring = s.max(1.0).round() as i32;
+    frame_rect(&mut c, ccx - ring, ccy - ring, cell + 2 * ring, cell + 2 * ring, ring, 0x000000, 0.85);
+    frame_rect(&mut c, ccx - 2 * ring, ccy - 2 * ring, cell + 4 * ring, cell + 4 * ring, ring, 0xFFFFFF, 0.95);
 
-    // Label strip at the bottom (black, 70% opaque per spec).
-    let label_y = my + mag_size - mag_label_h;
-    draw_rounded_rect_alpha(buf, w, h, mx, label_y, mag_size, mag_label_h, 0, 0x000000, 0.7);
+    // ---- info rows
+    //   [chip] #RRGGBB           R G B      ← row 1 centerline
+    //   x, y                [C] copy        ← row 2 centerline
+    // Every element on a row is vertically centered on that row's
+    // centerline: boxes by their geometry, text by its cap height (digits
+    // and capitals), so chips / pills / glyphs line up exactly.
+    let fpx = MAG_FONT_PX * s;
+    let small = MAG_FONT_SMALL_PX * s;
+    let left = mx + pad + px(4.0);
+    let right = mx + cw - pad - px(4.0);
+    let info_top = (my + pad + zoom) as f32;
+    let row1_c = info_top + 15.0 * s;
+    let row2_c = info_top + 35.0 * s;
+    let gap = px(8.0);
 
-    let cfx_clamped = cfx.clamp(0, fw as i32 - 1) as u32;
-    let cfy_clamped = cfy.clamp(0, fh as i32 - 1) as u32;
-    let center = frame.get_pixel(cfx_clamped, cfy_clamped);
-    let [r, g, b, _a] = center.0;
-    let text = format!(
-        "#{:02X}{:02X}{:02X} {}px, {}px",
-        r, g, b, cfx_clamped, cfy_clamped
-    );
-    let label_pad = (4.0 * scale) as i32;
-    let label_text_offset = (2.0 * scale) as i32;
-    font.render_text(buf, w, h, mx + label_pad, label_y + label_text_offset, &text, font_px, 0x00FFFFFF);
+    // Row 1: chip + HEX on the left, RGB on the right.
+    let chip = px(14.0) as f32;
+    let chip_y = (row1_c - chip / 2.0).round();
+    c.fill_rrect(left as f32, chip_y, chip, chip, 3.5 * s, center, 1.0);
+    // Hairline around the chip so very dark / light colors stay visible.
+    let edge = if luma(center) < 60 { 0xFFFFFF } else { 0x000000 };
+    frame_rrect(&mut c, left as f32, chip_y, chip, chip, 3.5 * s, s, edge, 0.35);
+
+    let (r, g, b) = ((center >> 16) & 0xFF, (center >> 8) & 0xFF, center & 0xFF);
+    let hex = format!("#{r:02X}{g:02X}{b:02X}");
+    let hex_x = left + chip as i32 + px(7.0);
+    let hex_w = font.measure_label(&hex, fpx).ceil() as i32;
+    let y1 = font.label_y_centered(row1_c, fpx);
+    font.render_text(c.buf, w, h, hex_x, y1, &hex, fpx, 0x00F2F2F7);
+    // RGB as three right-aligned 3-digit columns ("255 200 180"), sized to
+    // whatever room is left after the HEX, so the value never overlaps it
+    // and digits don't jitter as the color changes. If the card is ever too
+    // narrow the font shrinks to fit instead of colliding.
+    let rgb_txt = format!("{r:>3} {g:>3} {b:>3}");
+    let (rgb_x, rgb_px) = fit_right(font, &rgb_txt, small, hex_x + hex_w + gap, right);
+    let y1s = font.label_y_centered(row1_c, rgb_px);
+    font.render_text(c.buf, w, h, rgb_x, y1s, &rgb_txt, rgb_px, 0x008E8E93);
+
+    // Row 2: coordinates on the left, shortcut hint / confirmation right.
+    let y2s = font.label_y_centered(row2_c, small);
+    let coords = format!("{cfx}, {cfy}");
+    font.render_text(c.buf, w, h, left, y2s, &coords, small, 0x008E8E93);
+    let pill_h = (16.0 * s).round();
+    let pill_y = (row2_c - pill_h / 2.0).round();
+    if copied {
+        // Green confirmation pill replaces the hint briefly.
+        let label = "Copied";
+        let label_w = font.measure_label(label, small);
+        let pw = (label_w + 14.0 * s).round();
+        let pxx = right as f32 - pw;
+        c.fill_rrect(pxx, pill_y, pw, pill_h, pill_h / 2.0, 0x0034C759, 0.22);
+        let tx = (pxx + (pw - label_w) / 2.0).round() as i32;
+        font.render_text(c.buf, w, h, tx, y2s, label, small, 0x0030D158);
+    } else {
+        // Shortcut hint as a small key-cap: [C] copy
+        let label = "copy";
+        let label_w = font.measure_label(label, small).ceil() as i32;
+        let cap = pill_h;
+        let cap_x = (right - label_w - px(5.0)) as f32 - cap;
+        c.fill_rrect(cap_x, pill_y, cap, cap, 3.5 * s, 0xFFFFFF, 0.14);
+        let cw_c = font.measure_label("C", small);
+        let tx = (cap_x + (cap - cw_c) / 2.0).round() as i32;
+        font.render_text(c.buf, w, h, tx, y2s, "C", small, 0x00D1D1D6);
+        font.render_text(c.buf, w, h, right - label_w, y2s, label, small, 0x00636366);
+    }
+}
+
+/// Right-align `text` to `right`, never starting before `min_x`: shrinks the
+/// font if the natural width doesn't fit. Returns (x, px_size).
+fn fit_right(font: &mut Font, text: &str, px_size: f32, min_x: i32, right: i32) -> (i32, f32) {
+    let avail = (right - min_x).max(1) as f32;
+    let mut size = px_size;
+    let mut width = font.measure_label(text, size);
+    if width > avail {
+        size *= avail / width;
+        width = font.measure_label(text, size);
+    }
+    (right - width.ceil() as i32, size)
+}
+
+/// Coverage (0..1) of a pixel center inside a rounded rect.
+fn rrect_cov(px: f32, py: f32, x: f32, y: f32, w: f32, h: f32, r: f32) -> f32 {
+    let (hw, hh) = (w / 2.0, h / 2.0);
+    let r = r.min(hw).min(hh);
+    let qx = (px - (x + hw)).abs() - (hw - r);
+    let qy = (py - (y + hh)).abs() - (hh - r);
+    let d = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - r;
+    (0.5 - d).clamp(0.0, 1.0)
+}
+
+/// Axis-aligned rectangular frame of `t` px thickness.
+#[allow(clippy::too_many_arguments)]
+fn frame_rect(c: &mut crate::overlay::toolbar::Canvas, x: i32, y: i32, w: i32, h: i32, t: i32, color: u32, alpha: f32) {
+    for yy in y..y + h {
+        for xx in x..x + w {
+            let inside = xx >= x + t && xx < x + w - t && yy >= y + t && yy < y + h - t;
+            if !inside {
+                c.blend(xx, yy, color, alpha);
+            }
+        }
+    }
+}
+
+/// Rounded-rect outline of width `t`.
+#[allow(clippy::too_many_arguments)]
+fn frame_rrect(c: &mut crate::overlay::toolbar::Canvas, x: f32, y: f32, w: f32, h: f32, r: f32, t: f32, color: u32, alpha: f32) {
+    let (x0, y0) = ((x - 1.0).floor() as i32, (y - 1.0).floor() as i32);
+    let (x1, y1) = ((x + w + 1.0).ceil() as i32, (y + h + 1.0).ceil() as i32);
+    for yy in y0..=y1 {
+        for xx in x0..=x1 {
+            let (pxf, pyf) = (xx as f32 + 0.5, yy as f32 + 0.5);
+            let outer = rrect_cov(pxf, pyf, x, y, w, h, r);
+            let inner = rrect_cov(pxf, pyf, x + t, y + t, w - 2.0 * t, h - 2.0 * t, (r - t).max(0.0));
+            let a = (outer - inner).max(0.0);
+            if a > 0.0 {
+                c.blend(xx, yy, color, a * alpha);
+            }
+        }
+    }
+}
+
+/// Hex color under the cursor, `#RRGGBB` (for the C-to-copy shortcut).
+pub fn color_hex_at(frame: &image::RgbaImage, cursor: (i32, i32), window_size: (u32, u32)) -> String {
+    let (fw, fh) = frame.dimensions();
+    let (ww, wh) = (window_size.0.max(1) as u64, window_size.1.max(1) as u64);
+    let x = ((cursor.0.max(0) as u64 * fw as u64 / ww) as u32).min(fw - 1);
+    let y = ((cursor.1.max(0) as u64 * fh as u64 / wh) as u32).min(fh - 1);
+    let p = frame.get_pixel(x, y).0;
+    format!("#{:02X}{:02X}{:02X}", p[0], p[1], p[2])
 }
 
 #[cfg(test)]
@@ -500,6 +696,35 @@ mod magnifier_tests {
     fn magnifier_flips_when_near_bottom() {
         let (_x, y) = magnifier_position((100, 550), (800, 600), 120, 20);
         assert_eq!(y, 550 - 20 - 120);
+    }
+
+    #[test]
+    fn magnifier_card_flips_near_corner_and_stays_onscreen() {
+        let size = (200, 260);
+        let (x, y) = magnifier_position_wh((790, 590), (800, 600), size, 20);
+        assert_eq!((x, y), (790 - 20 - 200, 590 - 20 - 260));
+    }
+
+    #[test]
+    fn color_hex_at_maps_window_to_frame() {
+        let mut frame = image::RgbaImage::new(4, 4);
+        frame.put_pixel(2, 2, image::Rgba([0xAB, 0xCD, 0xEF, 255]));
+        // Window is half the frame's resolution.
+        assert_eq!(color_hex_at(&frame, (1, 1), (2, 2)), "#ABCDEF");
+    }
+
+    #[test]
+    fn magnifier_draws_center_color_chip() {
+        let (w, h) = (600u32, 600u32);
+        let frame = image::RgbaImage::from_pixel(w, h, image::Rgba([10, 200, 30, 255]));
+        let mut buf = vec![0u32; (w * h) as usize];
+        let mut f = Font::embedded();
+        draw_magnifier(&mut buf, w, h, &frame, (100, 100), (w, h), &mut f, 1.0, false);
+        // Zoom area is filled with the (uniform) source color.
+        // Sample the middle of cell (2, 2) — away from grid lines.
+        let zx = (100 + MAG_OFFSET + MAG_PAD + 2 * MAG_CELL + MAG_CELL / 2) as usize;
+        let zy = (100 + MAG_OFFSET + MAG_PAD + 2 * MAG_CELL + MAG_CELL / 2) as usize;
+        assert_eq!(buf[zy * w as usize + zx], 0x000A_C81E);
     }
 
     #[test]
@@ -615,5 +840,77 @@ mod tests {
         assert_eq!(placement, LabelPlacement::InsideTopLeft);
         assert_eq!(lx, 100 + 4);
         assert_eq!(ly, 5 + 4);
+    }
+}
+
+
+#[cfg(test)]
+mod mag_layout_tests {
+    use super::*;
+
+    #[test]
+    fn rgb_column_never_overlaps_hex_at_any_scale() {
+        let mut f = Font::embedded();
+        for scale in [1.0f32, 1.5, 2.0, 3.0] {
+            let s = scale;
+            let left = 0;
+            let right = ((MAG_CELLS * MAG_CELL) as f32 * s).round() as i32 - (8.0 * s).round() as i32;
+            let fpx = MAG_FONT_PX * s;
+            let hex_x = left + (14.0 * s).round() as i32 + (7.0 * s).round() as i32;
+            let hex_w = f.measure_label("#FFC8B4", fpx).ceil() as i32;
+            let gap = (8.0 * s).round() as i32;
+            let (x, size) = fit_right(&mut f, "255 200 180", MAG_FONT_SMALL_PX * s, hex_x + hex_w + gap, right);
+            // ≥ 1 px of clear space after the HEX glyphs, plus most of the gap
+            // (right-alignment may consume the sub-pixel remainder).
+            assert!(x >= hex_x + hex_w + gap - 1, "scale {s}: rgb x {x} too close to hex end {}", hex_x + hex_w);
+            // At standard sizes the full-size font fits (no shrinking).
+            assert!((size - MAG_FONT_SMALL_PX * s).abs() < 1e-3, "scale {s}: font shrank to {size}");
+        }
+        // A deliberately too-narrow box shrinks instead of overlapping.
+        let (x, size) = fit_right(&mut f, "255 200 180", 21.0, 100, 160);
+        assert!(x >= 100 && size < 21.0);
+    }
+
+    /// Vertical ink extent [top, bottom] of pixels matching `pred` within
+    /// columns [x0, x1).
+    fn ink_rows(buf: &[u32], w: u32, x0: i32, x1: i32, y0: i32, y1: i32, pred: impl Fn(u32) -> bool) -> Option<(i32, i32)> {
+        let rows: Vec<i32> = (y0..y1)
+            .filter(|&y| (x0..x1).any(|x| pred(buf[(y as u32 * w + x as u32) as usize])))
+            .collect();
+        Some((*rows.first()?, *rows.last()?))
+    }
+
+    #[test]
+    fn info_rows_are_vertically_centered_and_rgb_never_overlaps_hex() {
+        let (w, h) = (900u32, 900u32);
+        // Worst case: all channels three digits.
+        let frame = image::RgbaImage::from_pixel(w, h, image::Rgba([255, 200, 180, 255]));
+        let mut f = Font::embedded();
+        for copied in [false, true] {
+            let mut buf = vec![0u32; (w * h) as usize];
+            draw_magnifier(&mut buf, w, h, &frame, (100, 100), (w, h), &mut f, 2.0, copied);
+            // Card geometry (mirrors draw_magnifier at scale 2).
+            let s = 2;
+            let cell = MAG_CELL * s;
+            let zoom = cell * MAG_CELLS;
+            let pad = MAG_PAD * s;
+            let mx = 100 + MAG_OFFSET * s;
+            let my = 100 + MAG_OFFSET * s;
+            let info_top = my + pad + zoom;
+            let row1_c = info_top as f32 + 15.0 * s as f32;
+            let left = mx + pad + 4 * s;
+            let right = mx + zoom + 2 * pad - pad - 4 * s;
+
+            // Chip (salmon) and HEX text (near-white) share the row-1 centerline.
+            let chip = ink_rows(&buf, w, left, left + 10, info_top, info_top + 30 * s, |p| p == 0x00FF_C8B4).unwrap();
+            let hex = ink_rows(&buf, w, left + 21 * s, left + 21 * s + 100, info_top, info_top + 30 * s, |p| ((p >> 16) & 0xFF) > 200 && (p & 0xFF) > 200).unwrap();
+            let c_chip = (chip.0 + chip.1) as f32 / 2.0;
+            let c_hex = (hex.0 + hex.1) as f32 / 2.0;
+            assert!((c_chip - row1_c).abs() <= 1.5, "chip center {c_chip} vs row {row1_c}");
+            assert!((c_hex - row1_c).abs() <= 1.5, "hex center {c_hex} vs row {row1_c}");
+
+            let _ = right;
+
+        }
     }
 }

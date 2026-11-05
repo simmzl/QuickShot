@@ -12,6 +12,7 @@ mod icon_font;
 #[cfg(target_os = "macos")]
 mod macos_objc;
 mod notification;
+mod native_text;
 mod overlay;
 mod permission;
 mod pin;

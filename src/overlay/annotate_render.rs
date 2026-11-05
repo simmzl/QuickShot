@@ -10,9 +10,6 @@ use super::state::Rect;
 
 pub const ARROWHEAD_LEN: f32 = 28.0; // 2× the original 14
 
-/// Multi-line text leading factor (line_height / px_size).
-const LINE_HEIGHT_RATIO: f32 = 1.2;
-
 /// Apply an annotation to a CROPPED image. `crop_offset` is the frame-space
 /// coordinate corresponding to the cropped image's (0, 0). Annotations are
 /// stored in frame coords; we translate into crop-local coords here.
@@ -107,21 +104,29 @@ pub fn draw_ellipse_outline_on_image(
     let rx = rect.w as f64 / 2.0;
     let ry = rect.h as f64 / 2.0;
     let half_t = thickness as f64 / 2.0;
-    let min_r = rx.min(ry);
     let pad = (thickness + 2).max(2);
-    let y_min = rect.y - pad;
-    let y_max = rect.y + rect.h + pad;
-    let x_min = rect.x - pad;
-    let x_max = rect.x + rect.w + pad;
+    let (iw, ih) = (img.width() as i32, img.height() as i32);
+    let y_min = (rect.y - pad).max(0);
+    let y_max = (rect.y + rect.h + pad).min(ih - 1);
+    let x_min = (rect.x - pad).max(0);
+    let x_max = (rect.x + rect.w + pad).min(iw - 1);
+    // Cheap reject: points whose normalized radius is far from 1 can't be
+    // within the stroke. The band is sized for the *major* radius so it's
+    // conservative everywhere on the ring.
+    let band = (half_t + 1.0) / rx.min(ry);
+    let (r_lo, r_hi) = ((1.0 - band).max(0.0), 1.0 + band);
+    let (r_lo2, r_hi2) = (r_lo * r_lo, r_hi * r_hi);
     for y in y_min..=y_max {
         for x in x_min..=x_max {
             let px = x as f64 + 0.5;
             let py = y as f64 + 0.5;
             let nx = (px - cx) / rx;
             let ny = (py - cy) / ry;
-            let r_norm = (nx * nx + ny * ny).sqrt();
-            // Approximate Euclidean distance to perimeter via min-radius scale.
-            let dist = (r_norm - 1.0).abs() * min_r;
+            let rn2 = nx * nx + ny * ny;
+            if rn2 < r_lo2 || rn2 > r_hi2 {
+                continue;
+            }
+            let dist = ellipse_outline_distance(px, py, cx, cy, rx, ry);
             let coverage = (half_t + 0.5 - dist).clamp(0.0, 1.0) as f32;
             if coverage > 0.0 {
                 put_blend_image(img, x, y, color, coverage);
@@ -583,7 +588,7 @@ pub fn frame_rect_to_window_rect(
 }
 
 /// Compute the rendered bounding box (in frame-space) of a Text annotation.
-/// Returns None for non-Text variants or content that produces no lines.
+/// Returns None for non-Text variants or empty content.
 ///
 /// Used by Tool::Text click handling to test whether the user clicked on an
 /// existing text annotation (so it can be lifted back into edit mode).
@@ -592,32 +597,21 @@ pub fn text_bbox(
     font: &mut crate::text::Font,
 ) -> Option<Rect> {
     let Annotation::Text { origin, content, style } = ann else { return None };
-    let px_size = style.stroke.font_px();
-    let line_height = (px_size * LINE_HEIGHT_RATIO).round() as i32;
-    // Normalize line endings the same way `paint_text_on_image` /
-    // `draw_text_on_buf` do, so the bbox we report matches what gets rendered.
-    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
-    let lines: Vec<&str> = normalized.split('\n').collect();
-    if lines.is_empty() {
+    if content.is_empty() {
         return None;
     }
-    let max_width = lines
-        .iter()
-        .map(|line| font.measure_text_width(line, px_size).ceil() as i32)
-        .max()
-        .unwrap_or(0);
-    let total_height = lines.len() as i32 * line_height;
+    let (w, h) = font.measure_annotation(content, style.stroke.font_px(), style.color.argb());
     Some(Rect {
         x: origin.0,
         y: origin.1,
-        w: max_width.max(1),
-        h: total_height.max(1),
+        w: (w as i32).max(1),
+        h: (h as i32).max(1),
     })
 }
 
-/// Paint multi-line text into an `RgbaImage` (export path). `origin` is the
-/// crop-local pen position of the first line; subsequent lines step down by
-/// `1.2 * px_size`. Color/font size come from `style`.
+/// Paint text into an `RgbaImage` (export path). `origin` is the crop-local
+/// top-left of the first line box. Rasterized by the platform text stack
+/// (same font as the native editor) so the export matches what was typed.
 pub fn paint_text_on_image(
     img: &mut RgbaImage,
     origin: (i32, i32),
@@ -625,22 +619,14 @@ pub fn paint_text_on_image(
     style: AnnotationStyle,
     font: &mut crate::text::Font,
 ) {
-    let px_size = style.stroke.font_px();
-    let line_height = (px_size * LINE_HEIGHT_RATIO).round() as i32;
-    let color_rgba = style.color.rgba();
-    // Normalize Windows / classic-Mac line endings before splitting on '\n'.
-    // Order matters: replace `\r\n` first, then lone `\r`. Otherwise `\r\n`
-    // would become `\n\n`.
-    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
-    for (i, line) in normalized.split('\n').enumerate() {
-        let ly = origin.1 + i as i32 * line_height;
-        font.render_text_rgba(img, origin.0, ly, line, px_size, color_rgba);
-    }
+    let mask = font.text_mask(content, style.stroke.font_px(), style.color.argb());
+    crate::text::blit_mask_rgba(img, origin.0, origin.1, mask);
 }
 
-/// Paint multi-line text into the softbuffer (live preview). `origin_frame` is
-/// in frame coords; we map it to window coords and scale `px_size` by the
-/// vertical frame→window ratio so on-screen text matches the eventual export.
+/// Paint text into the softbuffer (live preview). `origin_frame` is in frame
+/// coords; the frame-space mask is scaled by the frame→window ratio so the
+/// on-screen text matches the eventual export.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_text_on_buf(
     buf: &mut [u32],
     win_w: u32,
@@ -654,18 +640,9 @@ pub fn draw_text_on_buf(
     let frame_size = frame.dimensions();
     let window_size = (win_w, win_h);
     let (px, py) = frame_to_window(origin_frame, frame_size, window_size);
-    let scale_y = window_size.1 as f32 / frame_size.1.max(1) as f32;
-    let px_size = style.stroke.font_px() * scale_y;
-    let argb = style.color.argb();
-    let line_height = (px_size * LINE_HEIGHT_RATIO).round() as i32;
-    // Normalize Windows / classic-Mac line endings before splitting on '\n'.
-    // Order matters: replace `\r\n` first, then lone `\r`. Otherwise `\r\n`
-    // would become `\n\n`.
-    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
-    for (i, line) in normalized.split('\n').enumerate() {
-        let ly = py + i as i32 * line_height;
-        font.render_text(buf, win_w, win_h, px, ly, line, px_size, argb);
-    }
+    let scale = window_size.1 as f32 / frame_size.1.max(1) as f32;
+    let mask = font.text_mask(content, style.stroke.font_px(), style.color.argb());
+    crate::text::blit_mask_buf(buf, win_w, win_h, px, py, mask, scale);
 }
 
 pub fn draw_annotation_on_buf(
@@ -752,6 +729,13 @@ fn put_buf(buf: &mut [u32], w: u32, h: u32, x: i32, y: i32, color: u32) {
     }
 }
 
+/// Thick anti-aliased segment with round caps (live preview).
+///
+/// Hot path while dragging an arrow / pen stroke. Instead of testing every
+/// pixel of the segment's axis-aligned bounding box (a diagonal 3000 px
+/// arrow touched ~9 M pixels, mostly empty), each scanline only visits the
+/// x-span where the capsule can have coverage, and the `sqrt` is skipped
+/// for pixels that are fully inside or fully outside.
 fn draw_line_thick_buf(
     buf: &mut [u32],
     w: u32,
@@ -761,44 +745,122 @@ fn draw_line_thick_buf(
     color: u32,
     thickness: i32,
 ) {
-    // Per-pixel distance-coverage AA (buf variant). One blend pass per pixel.
     if thickness <= 0 {
         return;
     }
     let half_t = thickness as f64 / 2.0;
-    let fx0 = from.0 as f64;
-    let fy0 = from.1 as f64;
-    let fx1 = to.0 as f64;
-    let fy1 = to.1 as f64;
-    let dx = fx1 - fx0;
-    let dy = fy1 - fy0;
+    let (x0, y0) = (from.0 as f64, from.1 as f64);
+    let (x1, y1) = (to.0 as f64, to.1 as f64);
+    let (dx, dy) = (x1 - x0, y1 - y0);
     let len2 = dx * dx + dy * dy;
-    let bound_min_x = (fx0.min(fx1) - half_t - 1.0).floor() as i32;
-    let bound_max_x = (fx0.max(fx1) + half_t + 1.0).ceil() as i32;
-    let bound_min_y = (fy0.min(fy1) - half_t - 1.0).floor() as i32;
-    let bound_max_y = (fy0.max(fy1) + half_t + 1.0).ceil() as i32;
+    // Coverage reaches 0 at distance half_t + 0.5 from the centerline.
+    let reach = half_t + 0.5;
+    let reach2 = reach * reach;
+    let inner = (half_t - 0.5).max(0.0);
+    let inner2 = inner * inner;
 
-    for y in bound_min_y..=bound_max_y {
-        for x in bound_min_x..=bound_max_x {
+    let y_lo = ((y0.min(y1) - reach).floor() as i32).max(0);
+    let y_hi = ((y0.max(y1) + reach).ceil() as i32).min(h as i32 - 1);
+    for y in y_lo..=y_hi {
+        let py = y as f64 + 0.5;
+        // Exact x-range of the capsule (segment ⊕ disk of radius `reach`)
+        // on this scanline: union of both end-cap circles and the band
+        // between the two offset lines.
+        let (mut xa, mut xb) = (f64::INFINITY, f64::NEG_INFINITY);
+        for (cx, cy) in [(x0, y0), (x1, y1)] {
+            let ddy = py - cy;
+            if ddy.abs() < reach {
+                let hw = (reach2 - ddy * ddy).sqrt();
+                xa = xa.min(cx - hw);
+                xb = xb.max(cx + hw);
+            }
+        }
+        if len2 > 1e-6 && dy.abs() > 1e-9 {
+            // Band between the caps: on row `py` the infinite thick line
+            // occupies x ∈ [xc - hw, xc + hw] with xc the centerline's x at
+            // this row and hw = reach·len/|dy|. The part of it within the
+            // segment's t∈[0,1] slab lies between the end caps' x-centers,
+            // widened by hw — a superset of the true band that stays tight.
+            let len = len2.sqrt();
+            let xc = x0 + (py - y0) * dx / dy;
+            let hw = reach * len / dy.abs();
+            let lo = (xc - hw).max(x0.min(x1) - reach);
+            let hi = (xc + hw).min(x0.max(x1) + reach);
+            // Only rows inside the segment's vertical extent (± reach) can
+            // hit the band; the caps above already cover the ends.
+            if py >= y0.min(y1) - reach && py <= y0.max(y1) + reach && lo <= hi {
+                xa = xa.min(lo);
+                xb = xb.max(hi);
+            }
+        } else if len2 > 1e-6 && (py - y0).abs() < reach {
+            // Horizontal segment: band spans the whole segment.
+            xa = xa.min(x0.min(x1));
+            xb = xb.max(x0.max(x1));
+        }
+        if xa > xb {
+            continue;
+        }
+        // xa/xb bound pixel *centers*; pad one pixel so floor/ceil can't
+        // drop an edge pixel. The exact distance test below decides.
+        let x_lo = ((xa - 1.0).floor() as i32).max(0);
+        let x_hi = ((xb + 1.0).ceil() as i32).min(w as i32 - 1);
+        let row = (y as u32 * w) as usize;
+        for x in x_lo..=x_hi {
             let px = x as f64 + 0.5;
-            let py = y as f64 + 0.5;
-            // For degenerate (len2≈0) lines, force tc=0 → distance to start.
-            let tc = if len2 < 0.0001 {
+            let tc = if len2 < 1e-6 {
                 0.0
             } else {
-                (((px - fx0) * dx + (py - fy0) * dy) / len2).clamp(0.0, 1.0)
+                (((px - x0) * dx + (py - y0) * dy) / len2).clamp(0.0, 1.0)
             };
-            let proj_x = fx0 + tc * dx;
-            let proj_y = fy0 + tc * dy;
-            let ddx = px - proj_x;
-            let ddy = py - proj_y;
-            let dist = (ddx * ddx + ddy * ddy).sqrt();
-            let coverage = (half_t + 0.5 - dist).clamp(0.0, 1.0) as f32;
-            if coverage > 0.0 {
-                put_blend_buf(buf, w, h, x, y, color, coverage);
+            let ex = px - (x0 + tc * dx);
+            let ey = py - (y0 + tc * dy);
+            let d2 = ex * ex + ey * ey;
+            if d2 >= reach2 {
+                continue;
+            }
+            let idx = row + x as usize;
+            if d2 <= inner2 {
+                buf[idx] = color;
+            } else {
+                let cov = (reach - d2.sqrt()).clamp(0.0, 1.0) as f32;
+                blend_px(&mut buf[idx], color, cov);
             }
         }
     }
+}
+
+/// Approximate Euclidean distance from (px, py) to the ellipse outline with
+/// center (cx, cy) and radii (rx, ry).
+///
+/// Uses the first-order estimate |F| / |∇F| on F(x, y) = √(x²/rx² + y²/ry²) − 1,
+/// which stays accurate for very eccentric ellipses. The previous estimate
+/// `|F| · min(rx, ry)` treated every point as if it lay on the minor axis, so
+/// on a wide ellipse the stroke near the narrow ends came out rx/ry times
+/// thicker than requested.
+#[inline(always)]
+pub(crate) fn ellipse_outline_distance(px: f64, py: f64, cx: f64, cy: f64, rx: f64, ry: f64) -> f64 {
+    let (nx, ny) = ((px - cx) / rx, (py - cy) / ry);
+    let r = (nx * nx + ny * ny).sqrt();
+    if r < 1e-9 {
+        // Exactly at the center: distance to the nearest vertex.
+        return rx.min(ry);
+    }
+    // ∇F = (nx / (rx·r), ny / (ry·r)) → |∇F| = √((nx/rx)² + (ny/ry)²) / r
+    let gx = nx / rx;
+    let gy = ny / ry;
+    let grad = (gx * gx + gy * gy).sqrt() / r;
+    (r - 1.0).abs() / grad
+}
+
+/// Blend `color` over `*px` by `cov` (0..=1), 0x00RRGGBB.
+#[inline(always)]
+fn blend_px(px: &mut u32, color: u32, cov: f32) {
+    let a = (cov * 256.0) as u32;
+    let inv = 256 - a;
+    let bg = *px;
+    let rb = (((color & 0x00FF_00FF) * a + (bg & 0x00FF_00FF) * inv) >> 8) & 0x00FF_00FF;
+    let g = (((color & 0x0000_FF00) * a + (bg & 0x0000_FF00) * inv) >> 8) & 0x0000_FF00;
+    *px = rb | g;
 }
 
 fn draw_arrowhead_buf(
@@ -900,6 +962,10 @@ fn draw_rect_outline_buf(
     }
 }
 
+/// Anti-aliased ellipse outline (live preview). Scanline-based: each row
+/// only visits the two short x-spans the ring actually crosses, instead of
+/// the full bounding box (a full-screen ellipse was ~7 M pixel tests per
+/// frame).
 fn draw_ellipse_outline_buf(
     buf: &mut [u32],
     w: u32,
@@ -919,25 +985,49 @@ fn draw_ellipse_outline_buf(
     if rx < 1.0 || ry < 1.0 {
         return;
     }
-    // Per-pixel distance-coverage AA (buf variant). One pass per pixel.
     let half_t = thickness as f64 / 2.0;
     let min_r = rx.min(ry);
-    let pad = (thickness + 2).max(2);
-    let x_min = tl.0.min(br.0) - pad;
-    let x_max = tl.0.max(br.0) + pad;
-    let y_min = tl.1.min(br.1) - pad;
-    let y_max = tl.1.max(br.1) + pad;
-    for y in y_min..=y_max {
-        for x in x_min..=x_max {
-            let px = x as f64 + 0.5;
-            let py = y as f64 + 0.5;
-            let nx = (px - cx) / rx;
-            let ny = (py - cy) / ry;
-            let r_norm = (nx * nx + ny * ny).sqrt();
-            let dist = (r_norm - 1.0).abs() * min_r;
-            let coverage = (half_t + 0.5 - dist).clamp(0.0, 1.0) as f32;
-            if coverage > 0.0 {
-                put_blend_buf(buf, w, h, x, y, color, coverage);
+    // Normalized-radius band where coverage > 0: |r_norm - 1| * min_r < half_t + 0.5.
+    let band = (half_t + 0.5) / min_r;
+    let (r_out, r_in) = (1.0 + band, (1.0 - band).max(0.0));
+    let oy = ry * r_out;
+
+    let y_lo = ((cy - oy).floor() as i32).max(0);
+    let y_hi = ((cy + oy).ceil() as i32).min(h as i32 - 1);
+    for y in y_lo..=y_hi {
+        let py = y as f64 + 0.5;
+        let ny = (py - cy) / ry;
+        // Outer and inner x half-extents of the ring on this row.
+        let outer2 = r_out * r_out - ny * ny;
+        if outer2 <= 0.0 {
+            continue;
+        }
+        let xo = rx * outer2.sqrt() + 1.0;
+        let inner2 = r_in * r_in - ny * ny;
+        let xi = if inner2 > 0.0 { (rx * inner2.sqrt() - 1.0).max(0.0) } else { 0.0 };
+        let row = (y as u32 * w) as usize;
+        let spans = [(cx - xo, cx - xi), (cx + xi, cx + xo)];
+        for (i, (a, b)) in spans.iter().enumerate() {
+            // When the row passes through the ring's top/bottom cap the two
+            // spans meet; draw the merged span once.
+            if i == 1 && xi == 0.0 {
+                break;
+            }
+            let (a, b) = if xi == 0.0 { (cx - xo, cx + xo) } else { (*a, *b) };
+            let x_lo = (a.floor() as i32).max(0);
+            let x_hi = (b.ceil() as i32).min(w as i32 - 1);
+            for x in x_lo..=x_hi {
+                let px = x as f64 + 0.5;
+                let dist = ellipse_outline_distance(px, py, cx, cy, rx, ry);
+                let cov = (half_t + 0.5 - dist).clamp(0.0, 1.0) as f32;
+                if cov > 0.0 {
+                    let idx = row + x as usize;
+                    if cov >= 1.0 {
+                        buf[idx] = color;
+                    } else {
+                        blend_px(&mut buf[idx], color, cov);
+                    }
+                }
             }
         }
     }
@@ -1236,5 +1326,126 @@ mod tests {
         paint_text_on_image(&mut img, (4, 4), "Hi", style, &mut font);
         let any_painted = img.pixels().any(|p| p[0] != 0 || p[1] != 0 || p[2] != 0);
         assert!(any_painted, "expected some painted pixels for 'Hi'");
+    }
+}
+
+#[cfg(test)]
+mod fast_raster_tests {
+    use super::*;
+
+    /// Brute-force reference: coverage test on every pixel of the bbox.
+    fn ref_line(buf: &mut [u32], w: u32, h: u32, a: (i32, i32), b: (i32, i32), t: i32) {
+        let half = t as f64 / 2.0;
+        let (x0, y0, x1, y1) = (a.0 as f64, a.1 as f64, b.0 as f64, b.1 as f64);
+        let (dx, dy) = (x1 - x0, y1 - y0);
+        let len2 = dx * dx + dy * dy;
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                let (px, py) = (x as f64 + 0.5, y as f64 + 0.5);
+                let tc = if len2 < 1e-6 { 0.0 } else { (((px - x0) * dx + (py - y0) * dy) / len2).clamp(0.0, 1.0) };
+                let d = ((px - x0 - tc * dx).powi(2) + (py - y0 - tc * dy).powi(2)).sqrt();
+                if half + 0.5 - d > 0.0 {
+                    buf[(y as u32 * w + x as u32) as usize] = 1;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fast_line_covers_exactly_the_reference_pixels() {
+        let (w, h) = (120u32, 90u32);
+        let cases = [
+            ((10, 10), (100, 70), 6),
+            ((100, 5), (8, 80), 4),
+            ((20, 40), (100, 40), 5),
+            ((60, 5), (60, 85), 3),
+            ((50, 50), (50, 50), 8),
+            ((5, 80), (115, 78), 2),
+            ((30, 10), (34, 85), 7),
+        ];
+        for (a, b, t) in cases {
+            let mut fast = vec![0u32; (w * h) as usize];
+            draw_line_thick_buf(&mut fast, w, h, a, b, 0x00FF_FFFF, t);
+            let mut reference = vec![0u32; (w * h) as usize];
+            ref_line(&mut reference, w, h, a, b, t);
+            // Every pixel the reference paints with visible coverage (> 1/64)
+            // must be painted, and nothing outside the reference may be.
+            let half = t as f64 / 2.0;
+            for i in 0..fast.len() {
+                if fast[i] != 0 {
+                    assert!(reference[i] != 0, "case {a:?}->{b:?} t={t}: extra px {i}");
+                }
+            }
+            let mut strong = vec![0u32; (w * h) as usize];
+            ref_line(&mut strong, w, h, a, b, ((half - 1.0 / 64.0) * 2.0).max(0.0) as i32);
+            let missing = (0..fast.len()).filter(|&i| strong[i] != 0 && fast[i] == 0).count();
+            assert_eq!(missing, 0, "case {a:?}->{b:?} t={t}: {missing} missing px");
+        }
+    }
+
+    #[test]
+    fn fast_ellipse_has_no_gaps() {
+        let (w, h) = (200u32, 140u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_ellipse_outline_buf(&mut buf, w, h, (10, 10), (190, 130), 0x00FF_FFFF, 4);
+        // Every row crossing the ellipse must have painted pixels on both sides.
+        for y in 14..126u32 {
+            let row = &buf[(y * w) as usize..((y + 1) * w) as usize];
+            assert!(row[..100].iter().any(|&p| p != 0), "left gap at row {y}");
+            assert!(row[100..].iter().any(|&p| p != 0), "right gap at row {y}");
+        }
+        // Center stays empty (outline, not fill).
+        assert_eq!(buf[(70 * w + 100) as usize], 0);
+    }
+}
+
+
+#[cfg(test)]
+mod ellipse_width_tests {
+    use super::*;
+
+    /// Count painted pixels (cov > ~50%) along a horizontal row through the
+    /// ellipse's left end (narrow side) and along a vertical column through
+    /// its top (wide side). For a uniform stroke both must be ~thickness.
+    fn widths(buf: &[u32], w: u32, cx: u32, cy: u32, left_x: u32, top_y: u32) -> (usize, usize) {
+        let row = (cy * w) as usize;
+        let horiz = (left_x.saturating_sub(20)..left_x + 40)
+            .filter(|&x| (buf[row + x as usize] >> 16) & 0xFF > 0x80)
+            .count();
+        let vert = (top_y.saturating_sub(20)..top_y + 40)
+            .filter(|&y| (buf[(y * w + cx) as usize] >> 16) & 0xFF > 0x80)
+            .count();
+        (horiz, vert)
+    }
+
+    #[test]
+    fn wide_ellipse_stroke_is_uniform_live() {
+        // 10:1 ellipse — the user-reported case.
+        let (w, h) = (1100u32, 200u32);
+        let mut buf = vec![0u32; (w * h) as usize];
+        draw_ellipse_outline_buf(&mut buf, w, h, (50, 50), (1050, 150), 0x00FF_0000, 6);
+        let (hz, vt) = widths(&buf, w, 550, 100, 50, 50);
+        assert!((5..=8).contains(&hz), "end thickness {hz}px (expected ~6)");
+        assert!((5..=8).contains(&vt), "side thickness {vt}px (expected ~6)");
+    }
+
+    #[test]
+    fn wide_ellipse_stroke_is_uniform_export() {
+        let mut img = RgbaImage::from_pixel(1100, 200, Rgba([0, 0, 0, 255]));
+        let rect = Rect { x: 50, y: 50, w: 1000, h: 100 };
+        draw_ellipse_outline_on_image(&mut img, rect, Rgba([255, 0, 0, 255]), 6);
+        let buf: Vec<u32> = img.pixels().map(|p| (p[0] as u32) << 16).collect();
+        let (hz, vt) = widths(&buf, 1100, 550, 100, 50, 50);
+        assert!((5..=8).contains(&hz), "end thickness {hz}px (expected ~6)");
+        assert!((5..=8).contains(&vt), "side thickness {vt}px (expected ~6)");
+    }
+
+    #[test]
+    fn circle_unchanged() {
+        // For a circle the new distance equals the old |r-1|*r exactly.
+        let d_new = ellipse_outline_distance(130.5, 100.5, 100.0, 100.0, 50.0, 50.0);
+        let r = ((30.5f64).powi(2) + 0.25).sqrt() / 50.0;
+        let d_old = (r - 1.0).abs() * 50.0;
+        assert!((d_new - d_old).abs() < 1e-9);
     }
 }

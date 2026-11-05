@@ -116,6 +116,9 @@ pub fn install(
         .build()
         .context("build tray icon")?;
 
+    #[cfg(target_os = "macos")]
+    enlarge_macos_status_icon(&tray);
+
     spawn_forwarder(proxy);
 
     Ok(TrayGuard {
@@ -124,6 +127,29 @@ pub fn install(
         region_item,
         screen_item,
     })
+}
+
+/// Menu-bar icon height in points. tray-icon hard-codes 18pt; system icons
+/// (Wi-Fi, Control Center, battery) use the full ~22pt status-bar height, so
+/// at 18pt our glyph looked noticeably smaller than its neighbours.
+#[cfg(target_os = "macos")]
+const MENUBAR_ICON_PT: f64 = 22.0;
+
+#[cfg(target_os = "macos")]
+fn enlarge_macos_status_icon(tray: &TrayIcon) {
+    use objc2::MainThreadMarker;
+    use objc2_foundation::NSSize;
+    let Some(mtm) = MainThreadMarker::new() else { return };
+    let Some(item) = tray.ns_status_item() else { return };
+    let Some(button) = item.button(mtm) else { return };
+    let Some(image) = button.image() else { return };
+    let size = image.size();
+    if size.height <= 0.0 {
+        return;
+    }
+    let w = size.width * MENUBAR_ICON_PT / size.height;
+    image.setSize(NSSize::new(w, MENUBAR_ICON_PT));
+    button.setImage(Some(&image));
 }
 
 fn load_icon() -> Result<Icon> {
@@ -136,10 +162,12 @@ fn load_icon() -> Result<Icon> {
 }
 
 fn spawn_forwarder(proxy: EventLoopProxy<UserEvent>) {
-    std::thread::spawn(move || {
-        let rx = MenuEvent::receiver();
-        loop {
-            if let Ok(event) = rx.try_recv() {
+    // Push-based (no 25 ms polling loop). Capture items still wait 150 ms so
+    // the tray menu has closed before the screen is grabbed; that delay runs
+    // on a short-lived thread so the menu callback itself never blocks.
+    MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
+        {
+            {
                 let (msg, delay) = if event.id == ID_REGION {
                     (
                         Some(UserEvent::CaptureRegion),
@@ -161,13 +189,20 @@ fn spawn_forwarder(proxy: EventLoopProxy<UserEvent>) {
                 };
 
                 if let Some(m) = msg {
-                    if let Some(d) = delay {
-                        std::thread::sleep(d);
+                    match delay {
+                        Some(d) => {
+                            let p = proxy.clone();
+                            std::thread::spawn(move || {
+                                std::thread::sleep(d);
+                                let _ = p.send_event(m);
+                            });
+                        }
+                        None => {
+                            let _ = proxy.send_event(m);
+                        }
                     }
-                    let _ = proxy.send_event(m);
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(25));
         }
-    });
+    }));
 }

@@ -1,6 +1,7 @@
 pub(crate) mod annotate;
 pub(crate) mod annotate_render;
 pub(crate) mod hit;
+pub(crate) mod present;
 pub(crate) mod render;
 pub(crate) mod snap;
 pub(crate) mod state;
@@ -8,15 +9,13 @@ pub(crate) mod toolbar;
 
 use anyhow::{Context, Result};
 use image::RgbaImage;
-use softbuffer::{Context as SoftContext, Surface};
-use std::num::NonZeroU32;
 use std::rc::Rc;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey, ModifiersState};
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowAttributes};
 
-use crate::capture::MonitorGeom;
+use crate::capture::{Captured, MonitorGeom};
 use state::{OverlayState, Rect, Transition};
 use annotate::{AnnotationStyle, PendingDraw};
 
@@ -31,59 +30,12 @@ pub enum Outcome {
     Cancelled,
 }
 
+/// In-flight text annotation, edited through a native OS text control
+/// (see `crate::native_text`). Typing, IME, selection, caret movement and
+/// copy/paste are all handled by the OS; we only own placement and commit.
 pub(crate) struct TextEdit {
     pub origin_frame: (i32, i32),
-    pub buffer: String,
-    /// In-flight IME preedit (pinyin / candidate composition string). Owned by
-    /// the IME — we never mutate this from key handling, only from
-    /// `WindowEvent::Ime`. Rendered alongside `buffer` so the user sees what
-    /// they're typing before they confirm a candidate.
-    pub preedit: String,
-    pub last_blink: std::time::Instant,
-    pub cursor_visible: bool,
-}
-
-impl TextEdit {
-    pub fn new(origin_frame: (i32, i32)) -> Self {
-        Self {
-            origin_frame,
-            buffer: String::new(),
-            preedit: String::new(),
-            last_blink: std::time::Instant::now(),
-            cursor_visible: true,
-        }
-    }
-
-    /// Constructor for re-editing a committed Text annotation: pre-fills the
-    /// buffer with the existing content. Used when the user clicks on a Text
-    /// annotation with `Tool::Text` active — the annotation is removed from
-    /// history and lifted into edit mode so it can be modified in place.
-    pub fn with_content(origin_frame: (i32, i32), content: String) -> Self {
-        Self {
-            origin_frame,
-            buffer: content,
-            preedit: String::new(),
-            last_blink: std::time::Instant::now(),
-            cursor_visible: true,
-        }
-    }
-
-    /// Append a printable character to the buffer. Returns true if the buffer
-    /// changed (so the caller can request a redraw).
-    /// Backspace / Delete / control characters are ignored here — the caller
-    /// dispatches Named keys via `backspace()` / explicit Enter handling.
-    pub fn handle_char(&mut self, ch: char) -> bool {
-        if ch.is_control() && ch != '\n' {
-            return false;
-        }
-        self.buffer.push(ch);
-        true
-    }
-
-    /// Pop the last character (if any). Returns true if something was popped.
-    pub fn backspace(&mut self) -> bool {
-        self.buffer.pop().is_some()
-    }
+    pub editor: crate::native_text::NativeTextEditor,
 }
 
 /// State for an in-progress annotation drag (Move tool). When a press hits an
@@ -110,14 +62,99 @@ pub(crate) fn key_to_color(c: char) -> Option<annotate::Color> {
     }
 }
 
+/// The overlay's OS window + softbuffer surface. Created once (hidden) at
+/// startup and reused for every capture: showing an existing window is far
+/// cheaper than creating an NSWindow / HWND + CALayer surface per hotkey
+/// press, and level / collection behavior / animation flags only need to be
+/// configured once.
+pub struct OverlayHost {
+    pub window: Rc<Window>,
+    presenter: present::Presenter,
+    /// Geometry the window is currently placed at (avoid redundant moves).
+    placed: Option<MonitorGeom>,
+}
+
+impl OverlayHost {
+    pub fn new(event_loop: &ActiveEventLoop) -> Result<Self> {
+        let attrs = WindowAttributes::default()
+            .with_title("QuickShot overlay")
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_visible(false)
+            .with_inner_size(winit::dpi::LogicalSize::new(100.0, 100.0));
+        let win = event_loop.create_window(attrs).context("create window")?;
+        #[cfg(target_os = "macos")]
+        {
+            // Animation behavior must be applied FIRST so subsequent
+            // setLevel: / setCollectionBehavior: / makeKeyAndOrderFront: don't
+            // trigger macOS's default appear/zoom animation.
+            set_macos_window_animation_none(&win);
+            // macOS 26 (Tahoe): without an explicit collectionBehavior a
+            // borderless accessory-app overlay can land at the desktop layer.
+            set_macos_overlay_collection_behavior(&win);
+            // kCGAssistiveTechHighWindowLevel = 1500.
+            set_macos_window_level(&win, 1500);
+            // canBecomeKeyWindow must return YES for ESC/Enter to be delivered
+            // before any mouse click.
+            ensure_nswindow_can_become_key();
+            log_macos_window_level(&win);
+        }
+        let window = Rc::new(win);
+        // Opt into IME events (harmless; text entry itself goes through the
+        // native editor control).
+        window.set_ime_allowed(true);
+        let presenter = present::Presenter::new(window.clone())?;
+        Ok(Self { window, presenter, placed: None })
+    }
+
+    /// Move/resize the hidden window onto `geom`'s monitor.
+    fn place(&mut self, geom: &MonitorGeom) {
+        if self.placed.as_ref() == Some(geom) {
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        set_macos_window_frame(&self.window, geom);
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.window
+                .set_outer_position(winit::dpi::PhysicalPosition::new(geom.x, geom.y));
+            let _ = self
+                .window
+                .request_inner_size(winit::dpi::PhysicalSize::new(geom.width, geom.height));
+        }
+        self.placed = Some(*geom);
+    }
+
+    fn show(&self) {
+        #[cfg(target_os = "macos")]
+        make_macos_key_window(&self.window);
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.window.set_visible(true);
+            self.window.focus_window();
+        }
+    }
+
+    pub fn hide(&self) {
+        self.window.set_visible(false);
+    }
+}
+
 pub struct Overlay {
     pub window: Rc<Window>,
-    surface: Surface<Rc<Window>, Rc<Window>>,
+    /// The persistent host (window + surface); handed back to `App` when the
+    /// session ends via [`Overlay::into_host`].
+    host: OverlayHost,
     pub frame: RgbaImage,
     /// Precomputed fully-dimmed background (swizzled 0x00RRGGBB, channels
     /// halved). The frame is fixed for the overlay's lifetime, so we build this
     /// once and memcpy it every redraw instead of re-dimming ~8M px per frame.
     dimmed_bg: Vec<u32>,
+    /// Dimmed background with the selection interior re-brightened, for
+    /// the selection rect in `.0`. While the user draws annotations the
+    /// selection is fixed, so each frame starts from one parallel memcpy of
+    /// this instead of re-swizzling the selection from the RGBA frame.
+    composed_bg: Option<(Option<(u32, u32, u32, u32)>, Vec<u32>)>,
     /// Memoized per-block averages for committed mosaic annotations, so we
     /// don't re-sum the source pixels of every mosaic on each redraw.
     mosaic_cache: annotate_render::MosaicCache,
@@ -151,113 +188,45 @@ pub struct Overlay {
     /// Annotation under the cursor while Move tool is active and no drag is
     /// in progress. Drives the faint hover-outline in `redraw`.
     pub(crate) hovered_annotation_idx: Option<usize>,
+    /// Toolbar button under the cursor (drives hover highlight).
+    toolbar_hover: toolbar::ToolbarHit,
+    /// When the C shortcut last copied a color (shows a "Copied" badge).
+    color_copied_at: Option<std::time::Instant>,
+    /// Used by the native text editor to wake the event loop when it
+    /// consumes Return / Escape itself.
+    proxy: winit::event_loop::EventLoopProxy<crate::app::UserEvent>,
 }
 
 impl Overlay {
-    pub fn create(
-        event_loop: &ActiveEventLoop,
-        frame: RgbaImage,
+    /// Start a capture session on the reusable `host`. `window_list` is the
+    /// snap-target enumeration (computed in parallel with the capture).
+    pub fn begin(
+        mut host: OverlayHost,
+        captured: Captured,
         monitor_geom: &MonitorGeom,
+        window_list: Vec<snap::WindowEntry>,
+        font: crate::text::Font,
+        icon_font: crate::icon_font::IconFont,
+        proxy: winit::event_loop::EventLoopProxy<crate::app::UserEvent>,
     ) -> Result<Self> {
-        #[cfg(target_os = "macos")]
-        let window = {
-            // On macOS: create a borderless window, then use raw NSWindow API
-            // to position it on the target monitor with a level above the dock/menu bar.
-            // This avoids both the Space-switching animation (Fullscreen::Borderless)
-            // and the "always fullscreens on the app's own monitor" problem (set_simple_fullscreen).
-            let size = winit::dpi::Size::Logical(winit::dpi::LogicalSize::new(
-                monitor_geom.width as f64,
-                monitor_geom.height as f64,
-            ));
-            let position = winit::dpi::Position::Logical(winit::dpi::LogicalPosition::new(
-                monitor_geom.x as f64,
-                monitor_geom.y as f64,
-            ));
-            let attrs = WindowAttributes::default()
-                .with_title("QuickShot overlay")
-                .with_decorations(false)
-                .with_resizable(false)
-                .with_inner_size(size)
-                .with_position(position)
-                // Create hidden so we don't flash a level-0 window between
-                // create_window and the subsequent setLevel:1500 + animation
-                // configuration. makeKeyAndOrderFront: below orders it front.
-                .with_visible(false);
-            let win = event_loop.create_window(attrs).context("create window")?;
-            // Animation behavior must be applied FIRST so subsequent
-            // setLevel: / setCollectionBehavior: / makeKeyAndOrderFront: don't
-            // trigger macOS's default appear/zoom animation.
-            // NSWindowAnimationBehaviorNone suppresses the appear/order-front
-            // animation so the overlay doesn't fade-in or zoom on every capture.
-            set_macos_window_animation_none(&win);
-            // macOS 26 (Tahoe) tightened how it places accessory-app borderless
-            // windows: without an explicit collectionBehavior, an overlay with
-            // setLevel:1000 can land at the desktop layer instead of covering
-            // app windows. canJoinAllSpaces+stationary+fullScreenAuxiliary is
-            // the standard idiom for screen overlays / screenshot tools.
-            set_macos_overlay_collection_behavior(&win);
-            // kCGAssistiveTechHighWindowLevel = 1500 — Apple-reserved high level for
-            // assistive overlays, sits above kCGScreenSaverWindowLevel (1000) and is
-            // robust against macOS 26's new accessory-app demotion behavior.
-            set_macos_window_level(&win, 1500);
-            // canBecomeKeyWindow must return YES for ESC/Enter to be delivered
-            // before any mouse click. Apply once per process; harmless to call
-            // again on subsequent overlay opens.
-            ensure_nswindow_can_become_key();
-            // makeKeyAndOrderFront: both orders the window front (making it
-            // visible after with_visible(false)) and makes it key so ESC/Enter
-            // are delivered before any mouse click.
-            make_macos_key_window(&win);
-            // Read back the level so a future regression is visible in stderr
-            // without having to attach a debugger.
-            log_macos_window_level(&win);
-            win
-        };
-
-        #[cfg(not(target_os = "macos"))]
-        let window = {
-            // On Windows: create the window with explicit physical position +
-            // size at the target monitor, initially hidden. We render the
-            // first frame in this function (below) and only then make it
-            // visible, so the user never sees the default white client area
-            // that `Fullscreen::Borderless` flashes at (0, 0) before it
-            // expands to fill the screen.
-            let position = winit::dpi::PhysicalPosition::new(monitor_geom.x, monitor_geom.y);
-            let size = winit::dpi::PhysicalSize::new(monitor_geom.width, monitor_geom.height);
-            let attrs = WindowAttributes::default()
-                .with_title("QuickShot overlay")
-                .with_decorations(false)
-                .with_resizable(false)
-                .with_visible(false)
-                .with_position(position)
-                .with_inner_size(size);
-            event_loop.create_window(attrs).context("create window")?
-        };
-
+        host.place(monitor_geom);
+        let window = host.window.clone();
         let scale_factor = window.scale_factor() as f32;
-        let window = Rc::new(window);
-        // Opt into IME events so winit forwards `WindowEvent::Ime` for CJK /
-        // dead-key composition. Without this, only `Key::Character` fires and
-        // CJK input from the OS-level IME is silently dropped.
-        window.set_ime_allowed(true);
-        let context = SoftContext::new(window.clone()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
-        let surface =
-            Surface::new(&context, window.clone()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
-
-        let dimmed_bg = render::precompute_dimmed(&frame);
+        let Captured { frame, dimmed } = captured;
 
         let mut overlay = Self {
             window,
-            surface,
+            host,
             frame,
-            dimmed_bg,
+            dimmed_bg: dimmed,
+            composed_bg: None,
             mosaic_cache: annotate_render::MosaicCache::new(),
             state: OverlayState::Idle,
             cursor: (0, 0),
             last_click: None,
             last_redraw: None,
-            font: crate::text::Font::embedded(),
-            icon_font: crate::icon_font::IconFont::embedded(),
+            font,
+            icon_font,
             scale_factor,
             tool: annotate::Tool::Move,
             history: annotate::History::new(),
@@ -266,28 +235,65 @@ impl Overlay {
             text_edit: None,
             modifiers: ModifiersState::default(),
             show_hints: false,
-            // Iter 6a: enumerate windows once at overlay creation. Captures
-            // are sub-second so window topology is effectively frozen for
-            // the duration; no need to refresh.
             snap_target: None,
             press_pos: None,
             snap_at_press: None,
-            window_list: snap::enumerate_windows(monitor_geom, std::process::id(), scale_factor),
+            window_list,
             annotation_drag: None,
             hovered_annotation_idx: None,
+            toolbar_hover: toolbar::ToolbarHit::None,
+            color_copied_at: None,
+            proxy,
         };
 
-        // Windows: paint the first frame while the window is still hidden,
-        // then reveal it. Without this, `with_visible(false)` → request_redraw
-        // would still flash a default white client area on the first frame.
-        #[cfg(target_os = "windows")]
-        {
-            let _ = overlay.redraw();
-            overlay.window.set_visible(true);
-            overlay.window.focus_window();
-        }
+        // Seed the cursor so the magnifier / snap highlight are right on the
+        // very first frame (before any CursorMoved arrives).
+        overlay.cursor = overlay.initial_cursor(monitor_geom);
+        overlay.snap_target = snap::window_under_cursor(overlay.cursor, &overlay.window_list);
 
+        // Paint the first frame while still hidden, then reveal — no flash of
+        // stale content from the previous session.
+        let t = std::time::Instant::now();
+        if let Err(e) = overlay.redraw() {
+            eprintln!("initial redraw error: {e:?}");
+        }
+        let t_draw = t.elapsed();
+        overlay.host.show();
+        if std::env::var_os("QUICKSHOT_DEBUG").is_some() {
+            eprintln!(
+                "QuickShot timing: first frame {:?}, show {:?}, window {:?}",
+                t_draw,
+                t.elapsed() - t_draw,
+                overlay.window.inner_size()
+            );
+        }
         Ok(overlay)
+    }
+
+    /// End the session: hide the window and hand back the reusable host plus
+    /// the label/icon fonts (so their glyph caches survive across sessions).
+    pub fn into_parts(self) -> (OverlayHost, crate::text::Font, crate::icon_font::IconFont) {
+        let Overlay { host, font, icon_font, text_edit, window, .. } = self;
+        drop(text_edit); // detach native editor before hiding
+        window.set_cursor(winit::window::CursorIcon::Default);
+        host.hide();
+        (host, font, icon_font)
+    }
+
+    fn initial_cursor(&self, geom: &MonitorGeom) -> (i32, i32) {
+        match crate::capture::cursor_global() {
+            Some((gx, gy)) => {
+                #[cfg(target_os = "macos")]
+                let (lx, ly) = (
+                    (gx - geom.x as f64) * geom.scale,
+                    (gy - geom.y as f64) * geom.scale,
+                );
+                #[cfg(not(target_os = "macos"))]
+                let (lx, ly) = (gx - geom.x as f64, gy - geom.y as f64);
+                (lx.round() as i32, ly.round() as i32)
+            }
+            None => (0, 0),
+        }
     }
 
     /// Translate one winit WindowEvent into a state transition and return
@@ -325,7 +331,30 @@ impl Overlay {
                         self.request_redraw_throttled();
                     }
                     OverlayState::Adjusting { rect, edit: None } => {
-                        // No redraw needed — just update the cursor icon.
+                        // Toolbar hover: highlight + arrow cursor; skip the
+                        // selection-edge cursor logic while over the bar.
+                        let size = self.window.inner_size();
+                        let tb = toolbar::Toolbar::layout(
+                            rect,
+                            (size.width, size.height),
+                            self.scale_factor,
+                        );
+                        let hover = tb.hit_with_tool(self.cursor, self.tool);
+                        if hover != self.toolbar_hover {
+                            self.toolbar_hover = hover;
+                            self.window.request_redraw();
+                        }
+                        if tb.contains(self.cursor, self.tool) {
+                            self.window.set_cursor(if hover == toolbar::ToolbarHit::None {
+                                winit::window::CursorIcon::Default
+                            } else {
+                                winit::window::CursorIcon::Pointer
+                            });
+                            if self.hovered_annotation_idx.take().is_some() {
+                                self.window.request_redraw();
+                            }
+                            return Outcome::Continue;
+                        }
                         let icon = hit::cursor_icon_for(hit::classify(self.cursor, rect));
                         self.window.set_cursor(icon);
 
@@ -419,31 +448,9 @@ impl Overlay {
                 self.modifiers = new_mods.state();
                 Outcome::Continue
             }
-            WindowEvent::Ime(ime_event) => {
-                use winit::event::Ime;
-                if let Some(t) = self.text_edit.as_mut() {
-                    match ime_event {
-                        Ime::Commit(s) => {
-                            // IME confirmed candidate(s) — append to buffer and
-                            // clear preedit. winit guarantees Commit and
-                            // Key::Character don't both fire for the same input.
-                            t.buffer.push_str(&s);
-                            t.preedit.clear();
-                            self.window.request_redraw();
-                        }
-                        Ime::Preedit(s, _cursor) => {
-                            // In-flight composition (pinyin etc). Render alongside
-                            // buffer so the user sees what they're typing.
-                            t.preedit = s;
-                            self.window.request_redraw();
-                        }
-                        Ime::Enabled | Ime::Disabled => {
-                            // Informational — nothing to do.
-                        }
-                    }
-                }
-                Outcome::Continue
-            }
+            // Text entry (incl. IME composition) is owned by the native
+            // editor control; winit's own IME events are irrelevant here.
+            WindowEvent::Ime(_) => Outcome::Continue,
             WindowEvent::CursorLeft { .. } => {
                 if self.snap_target.is_some() {
                     self.snap_target = None;
@@ -464,12 +471,88 @@ impl Overlay {
     /// hence the helper.
     fn commit_text_edit(&mut self) {
         if let Some(t) = self.text_edit.take() {
-            if !t.buffer.is_empty() {
+            let content = t.editor.text();
+            let origin = t.origin_frame;
+            // Dropping `t` detaches the native control and returns focus to
+            // the overlay's own view.
+            drop(t);
+            if !content.trim().is_empty() {
                 self.history.push(annotate::Annotation::Text {
-                    origin: t.origin_frame,
-                    content: t.buffer,
+                    origin,
+                    content,
                     style: self.current_style,
                 });
+            }
+            self.window.request_redraw();
+        }
+    }
+
+    /// Open the native text editor at frame-space `origin_frame`.
+    fn start_text_edit(&mut self, origin_frame: (i32, i32), initial: &str) {
+        let pos = annotate_render::frame_to_window(
+            origin_frame,
+            self.frame.dimensions(),
+            {
+                let s = self.window.inner_size();
+                (s.width, s.height)
+            },
+        );
+        let proxy = self.proxy.clone();
+        let wake: Box<dyn Fn()> = Box::new(move || {
+            let _ = proxy.send_event(crate::app::UserEvent::TextEditorWake);
+        });
+        match crate::native_text::NativeTextEditor::new(
+            &self.window,
+            pos,
+            initial,
+            self.editor_style(),
+            self.scale_factor as f64,
+            wake,
+        ) {
+            Some(editor) => {
+                self.text_edit = Some(TextEdit { origin_frame, editor });
+            }
+            None => eprintln!("text: could not create native editor"),
+        }
+        self.window.request_redraw();
+    }
+
+    /// Editor font/color in window-physical px (frame px scaled to window).
+    fn editor_style(&self) -> crate::native_text::EditorStyle {
+        let fh = self.frame.height().max(1) as f32;
+        let wh = self.window.inner_size().height.max(1) as f32;
+        crate::native_text::EditorStyle {
+            font_px: self.current_style.stroke.font_px() * wh / fh,
+            color_rgb: self.current_style.color.argb(),
+        }
+    }
+
+    /// Push the current color/size to the open editor (toolbar / shortcut
+    /// changes while editing).
+    fn sync_editor_style(&self) {
+        if let Some(t) = self.text_edit.as_ref() {
+            t.editor.set_style(self.editor_style());
+            t.editor.focus();
+        }
+    }
+
+    /// Process commit/cancel requests raised by the native editor. Called by
+    /// `App` whenever the editor wakes the loop.
+    pub fn poll_text_editor(&mut self) {
+        let events = match self.text_edit.as_ref() {
+            Some(t) => t.editor.take_events(),
+            None => return,
+        };
+        for ev in events {
+            match ev {
+                crate::native_text::EditorEvent::Commit => self.commit_text_edit(),
+                crate::native_text::EditorEvent::Cancel => {
+                    self.text_edit = None;
+                    self.window.request_redraw();
+                }
+            }
+            if self.text_edit.is_none() {
+                break;
             }
         }
     }
@@ -519,9 +602,16 @@ impl Overlay {
 
                 // Toolbar click takes priority over everything else.
                 let win_size = self.window.inner_size();
-                let tb = toolbar::Toolbar::layout(rect, (win_size.width, win_size.height));
+                let tb = toolbar::Toolbar::layout(
+                    rect,
+                    (win_size.width, win_size.height),
+                    self.scale_factor,
+                );
                 match tb.hit_with_tool(self.cursor, self.tool) {
                     toolbar::ToolbarHit::Tool(t) => {
+                        if t != annotate::Tool::Text {
+                            self.commit_text_edit();
+                        }
                         self.pending_draw = None;
                         self.hovered_annotation_idx = None;
                         if let OverlayState::Adjusting { rect: r, .. } = self.state {
@@ -545,11 +635,13 @@ impl Overlay {
                     }
                     toolbar::ToolbarHit::Color(c) => {
                         self.current_style.color = c;
+                        self.sync_editor_style();
                         self.window.request_redraw();
                         return Outcome::Continue;
                     }
                     toolbar::ToolbarHit::Stroke(s) => {
                         self.current_style.stroke = s;
+                        self.sync_editor_style();
                         self.window.request_redraw();
                         return Outcome::Continue;
                     }
@@ -566,7 +658,18 @@ impl Overlay {
                         self.commit_text_edit();
                         return Outcome::SaveAs(rect);
                     }
-                    toolbar::ToolbarHit::None => {}
+                    toolbar::ToolbarHit::Cancel => return Outcome::Cancelled,
+                    toolbar::ToolbarHit::Confirm => {
+                        self.commit_text_edit();
+                        return Outcome::Confirmed(rect);
+                    }
+                    toolbar::ToolbarHit::None => {
+                        // Clicks on the toolbar's padding / separators must
+                        // not fall through to drawing or resizing.
+                        if tb.contains(self.cursor, self.tool) {
+                            return Outcome::Continue;
+                        }
+                    }
                 }
 
                 // Tool::Text: clicks inside the selection rect either lift an
@@ -603,8 +706,8 @@ impl Overlay {
                         if let Some(annotate::Annotation::Text { origin, content, style }) =
                             self.history.remove_at(idx)
                         {
-                            self.text_edit = Some(TextEdit::with_content(origin, content));
                             self.current_style = style;
+                            self.start_text_edit(origin, &content);
                         }
                         self.window.request_redraw();
                         return Outcome::Continue;
@@ -612,8 +715,7 @@ impl Overlay {
 
                     // No hit — existing behavior: commit current text, start fresh.
                     self.commit_text_edit();
-                    self.text_edit = Some(TextEdit::new(cursor_frame));
-                    self.window.request_redraw();
+                    self.start_text_edit(cursor_frame, "");
                     return Outcome::Continue;
                 }
                 if self.tool == annotate::Tool::Text {
@@ -744,61 +846,18 @@ impl Overlay {
     }
 
     fn handle_key(&mut self, key: Key) -> Outcome {
-        // While composing text, all keys route through TextEdit. Tool/color/stroke
-        // shortcuts and undo/redo are suppressed — only Enter (commit), Esc
-        // (discard text only — does NOT cancel the overlay; user must Esc twice),
-        // Shift+Enter (newline), Backspace, and printable chars apply.
+        // While the native text editor has focus it consumes keystrokes
+        // itself; anything that still reaches winit (e.g. focus momentarily
+        // on the overlay after a toolbar click) must not trigger tool
+        // shortcuts. Escape still closes the editor.
         if self.text_edit.is_some() {
-            match &key {
-                Key::Named(NamedKey::Enter) => {
-                    if self.modifiers.shift_key() {
-                        if let Some(t) = self.text_edit.as_mut() {
-                            t.handle_char('\n');
-                        }
-                        self.window.request_redraw();
-                        return Outcome::Continue;
-                    }
-                    // Plain Enter commits.
-                    self.commit_text_edit();
-                    self.window.request_redraw();
-                    return Outcome::Continue;
-                }
-                Key::Named(NamedKey::Escape) => {
-                    self.text_edit = None;
-                    self.window.request_redraw();
-                    return Outcome::Continue;
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    if let Some(t) = self.text_edit.as_mut() {
-                        t.backspace();
-                    }
-                    self.window.request_redraw();
-                    return Outcome::Continue;
-                }
-                Key::Character(s) => {
-                    // Stroke (font-size) shortcuts stay live during composition so
-                    // the user can adjust text size mid-edit. Other shortcuts
-                    // (tool, color, undo) remain suppressed — only [/] are special.
-                    let ch = s.chars().next().unwrap_or('\0');
-                    if ch == '[' || ch == ']' {
-                        self.current_style.stroke = if ch == '[' {
-                            self.current_style.stroke.step_down()
-                        } else {
-                            self.current_style.stroke.step_up()
-                        };
-                        self.window.request_redraw();
-                        return Outcome::Continue;
-                    }
-                    if let Some(t) = self.text_edit.as_mut() {
-                        for ch in s.chars() {
-                            t.handle_char(ch);
-                        }
-                    }
-                    self.window.request_redraw();
-                    return Outcome::Continue;
-                }
-                _ => return Outcome::Continue,  // suppress all other keys while composing
+            if let Key::Named(NamedKey::Escape) = key {
+                self.text_edit = None;
+                self.window.request_redraw();
+            } else if let Some(t) = self.text_edit.as_ref() {
+                t.editor.focus();
             }
+            return Outcome::Continue;
         }
 
         // Hint-badge toggle: only fires in Adjusting (the toolbar exists then).
@@ -815,6 +874,34 @@ impl Overlay {
                 if ch == 'h' {
                     self.show_hints = !self.show_hints;
                     self.window.request_redraw();
+                    return Outcome::Continue;
+                }
+            }
+        }
+
+        // C (Idle / Dragging — while the magnifier is visible): copy the
+        // HEX color under the cursor and keep the overlay open.
+        if matches!(self.state, OverlayState::Idle | OverlayState::Dragging { .. })
+            && !self.modifiers.super_key()
+        {
+            if let Key::Character(s) = &key {
+                if s.eq_ignore_ascii_case("c") {
+                    let size = self.window.inner_size();
+                    let hex = render::color_hex_at(&self.frame, self.cursor, (size.width, size.height));
+                    match crate::clipboard::put_text(&hex) {
+                        Ok(()) => {
+                            println!("copied color {hex}");
+                            self.color_copied_at = Some(std::time::Instant::now());
+                            self.window.request_redraw();
+                            let proxy = self.proxy.clone();
+                            // Repaint once more when the "Copied" badge expires.
+                            std::thread::spawn(move || {
+                                std::thread::sleep(render::COPIED_BADGE_DURATION);
+                                let _ = proxy.send_event(crate::app::UserEvent::Redraw);
+                            });
+                        }
+                        Err(e) => eprintln!("copy color: {e:?}"),
+                    }
                     return Outcome::Continue;
                 }
             }
@@ -971,11 +1058,9 @@ impl Overlay {
     }
 
     pub fn redraw(&mut self) -> Result<()> {
+        let t_frame = std::time::Instant::now();
         let size = self.window.inner_size();
         let (w, h) = (size.width.max(1), size.height.max(1));
-        self.surface
-            .resize(NonZeroU32::new(w).unwrap(), NonZeroU32::new(h).unwrap())
-            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
 
         let sel_tuple = self.current_selection_rect_window();
         let sel_rect = self.current_selection_rect();
@@ -1013,12 +1098,25 @@ impl Overlay {
         let mosaic_cache = &mut self.mosaic_cache;
         let scale = self.scale_factor;
 
-        let mut buf = self
-            .surface
-            .buffer_mut()
-            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let mut buf = self.host.presenter.frame(w, h)?;
 
-        render::blit_background_dimmed(&mut buf, w, h, frame_ref, dimmed_bg, sel_tuple);
+        let t_acq = t_frame.elapsed();
+        let composed_ok = frame_ref.dimensions() == (w, h);
+        match (&mut self.composed_bg, composed_ok) {
+            (Some((key, cached)), true) if *key == sel_tuple && cached.len() == buf.len() => {
+                render::par_copy(&mut buf, cached);
+            }
+            (slot, true) => {
+                let mut cached = vec![0u32; buf.len()];
+                render::blit_background_dimmed(&mut cached, w, h, frame_ref, dimmed_bg, sel_tuple);
+                render::par_copy(&mut buf, &cached);
+                *slot = Some((sel_tuple, cached));
+            }
+            (_, false) => {
+                render::blit_background_dimmed(&mut buf, w, h, frame_ref, dimmed_bg, sel_tuple);
+            }
+        }
+        let t_bg = t_frame.elapsed();
         if let Some(r) = sel_tuple {
             render::draw_selection_outline(&mut buf, w, h, r, outline_color);
         }
@@ -1093,57 +1191,6 @@ impl Overlay {
                 }
             }
 
-            // Live TextEdit: blink toggle pass (mut), then render pass (immut).
-            // Two passes avoid a double-mutable-borrow on `self` between
-            // `self.text_edit` and `font` (which is `&mut self.font`).
-            if let Some(t) = self.text_edit.as_mut() {
-                let now = std::time::Instant::now();
-                if now.duration_since(t.last_blink) >= std::time::Duration::from_millis(530) {
-                    t.cursor_visible = !t.cursor_visible;
-                    t.last_blink = now;
-                }
-            }
-            if let Some(t) = self.text_edit.as_ref() {
-                // Display = committed buffer + in-flight IME preedit + caret.
-                // Preedit is rendered inline so the user can see CJK composition
-                // (pinyin, candidates) before they confirm.
-                let mut display = String::with_capacity(
-                    t.buffer.len() + t.preedit.len() + 1,
-                );
-                display.push_str(&t.buffer);
-                display.push_str(&t.preedit);
-                if t.cursor_visible {
-                    display.push('|');
-                }
-                let origin = t.origin_frame;
-                annotate_render::draw_text_on_buf(
-                    &mut buf, w, h, frame_ref, origin, &display,
-                    self.current_style, font,
-                );
-                // Position the IME candidate window roughly under the caret so
-                // macOS doesn't park it at an arbitrary corner. We give the
-                // bottom-left of the first text line: origin_frame mapped to
-                // window-space, offset down by ~one line height. Approximate
-                // sizing is fine — system IME treats this as a hint.
-                let frame_size = frame_ref.dimensions();
-                let window_size = (w, h);
-                let scale_y = window_size.1 as f32 / frame_size.1.max(1) as f32;
-                let line_h = (self.current_style.stroke.font_px() * scale_y)
-                    .round()
-                    .max(1.0) as i32;
-                let (cx, cy) = annotate_render::frame_to_window(
-                    origin, frame_size, window_size,
-                );
-                self.window.set_ime_cursor_area(
-                    winit::dpi::Position::Physical(
-                        winit::dpi::PhysicalPosition::new(cx, cy + line_h),
-                    ),
-                    winit::dpi::Size::Physical(
-                        winit::dpi::PhysicalSize::new(1, 1),
-                    ),
-                );
-            }
-
             // Anchors only when Move tool is active
             if self.tool == annotate::Tool::Move {
                 if let Some(r) = sel_rect {
@@ -1153,7 +1200,7 @@ impl Overlay {
 
             // Toolbar
             if let Some(sel_win) = sel_rect {
-                let tb = toolbar::Toolbar::layout(sel_win, (w, h));
+                let tb = toolbar::Toolbar::layout(sel_win, (w, h), scale);
                 toolbar::draw_toolbar(
                     &mut buf,
                     w,
@@ -1164,7 +1211,9 @@ impl Overlay {
                     self.history.can_undo(),
                     self.history.can_redo(),
                     self.show_hints,
+                    self.toolbar_hover,
                     icon_font,
+                    font,
                 );
             }
         }
@@ -1178,6 +1227,8 @@ impl Overlay {
                 window_size,
                 font,
                 scale,
+                self.color_copied_at
+                    .is_some_and(|t| t.elapsed() < render::COPIED_BADGE_DURATION),
             );
         }
         if show_label {
@@ -1195,7 +1246,16 @@ impl Overlay {
             }
         }
 
-        buf.present().map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let t_paint = t_frame.elapsed();
+        buf.present()?;
+        if frame_debug() {
+            eprintln!(
+                "QuickShot frame: acquire {:?} bg {:?} paint {:?}, present {:?}",
+                t_acq, t_bg - t_acq,
+                t_paint,
+                t_frame.elapsed() - t_paint
+            );
+        }
         Ok(())
     }
 
@@ -1215,6 +1275,11 @@ impl Overlay {
         }
     }
 
+}
+
+fn frame_debug() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("QUICKSHOT_FRAME_DEBUG").is_some())
 }
 
 /// Resolve the NSWindow* backing a winit Window via [nsView window].
@@ -1307,6 +1372,27 @@ fn make_macos_key_window(window: &Window) {
     }
 }
 
+/// Place the NSWindow exactly over the monitor `geom` (CG points, top-left
+/// origin) with `setFrame:display:`. winit's set_outer_position +
+/// request_inner_size on a hidden window that's moving between displays can
+/// end up constrained / offset; setting the Cocoa frame directly is exact.
+#[cfg(target_os = "macos")]
+fn set_macos_window_frame(window: &Window, geom: &MonitorGeom) {
+    use objc2::runtime::AnyObject;
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+    let Some(ns_window) = ns_window_of(window) else { return };
+    // Cocoa global coords: origin at bottom-left of the primary display.
+    let primary_h = core_graphics::display::CGDisplay::main().bounds().size.height;
+    let rect = NSRect::new(
+        NSPoint::new(geom.x as f64, primary_h - (geom.y as f64 + geom.height as f64)),
+        NSSize::new(geom.width as f64, geom.height as f64),
+    );
+    unsafe {
+        let obj = &*(ns_window as *const AnyObject);
+        let _: () = objc2::msg_send![obj, setFrame: rect, display: false];
+    }
+}
+
 /// Set the NSWindow level via NSWindow.setLevel:.
 /// 1000 = kCGScreenSaverWindowLevel, 1500 = kCGAssistiveTechHighWindowLevel.
 #[cfg(target_os = "macos")]
@@ -1369,55 +1455,112 @@ mod tests {
         assert_eq!(key_to_color('5'), None);
         assert_eq!(key_to_color('a'), None);
     }
+}
 
-    #[test]
-    fn text_edit_appends_printable() {
-        let mut t = TextEdit::new((10, 10));
-        t.handle_char('h');
-        t.handle_char('i');
-        assert_eq!(t.buffer, "hi");
-    }
 
-    #[test]
-    fn text_edit_backspace() {
-        let mut t = TextEdit::new((0, 0));
-        t.buffer.push_str("abc");
-        assert!(t.backspace());
-        assert_eq!(t.buffer, "ab");
-        t.buffer.clear();
-        assert!(!t.backspace());
-    }
+/// Renders the README screenshots from the real drawing code (no screen
+/// recording). Run with:
+///
+/// ```text
+/// QUICKSHOT_README_BG=path/to/wallpaper.png QUICKSHOT_README_OUT=docs/images \
+///   cargo test --release render_readme_images -- --ignored
+/// ```
+#[cfg(test)]
+mod readme_images {
+    use super::*;
+    use annotate::{Annotation, Color, Stroke};
 
-    #[test]
-    fn text_edit_newline() {
-        let mut t = TextEdit::new((0, 0));
-        t.handle_char('a');
-        t.handle_char('\n');
-        t.handle_char('b');
-        assert_eq!(t.buffer, "a\nb");
-    }
-
-    #[test]
-    fn text_edit_can_be_committed_via_helper() {
-        // Smoke: commit-take pattern preserves buffer to history.
-        // Replicates the take + push_if_nonempty body of `commit_text_edit`
-        // without requiring a full Overlay (which needs a Window).
-        let mut h = annotate::History::new();
-        let style = annotate::AnnotationStyle::default();
-        let t = TextEdit {
-            origin_frame: (5, 7),
-            buffer: "wow".to_string(),
-            preedit: String::new(),
-            last_blink: std::time::Instant::now(),
-            cursor_visible: true,
-        };
-        if !t.buffer.is_empty() {
-            h.push(annotate::Annotation::Text {
-                origin: t.origin_frame,
-                content: t.buffer,
-                style,
-            });
+    fn to_rgba(buf: &[u32], w: u32, h: u32) -> RgbaImage {
+        let mut out = RgbaImage::new(w, h);
+        for (p, &v) in out.pixels_mut().zip(buf) {
+            *p = image::Rgba([(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]);
         }
-        assert_eq!(h.current().len(), 1);
+        out
+    }
+
+    #[test]
+    #[ignore = "writes README images; run manually"]
+    fn render_readme_images() {
+        let out_dir = std::env::var("QUICKSHOT_README_OUT").unwrap_or_else(|_| "docs/images".into());
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let bg_path = std::env::var("QUICKSHOT_README_BG").expect("set QUICKSHOT_README_BG");
+        // 2x "Retina" canvas.
+        let (w, h) = (2400u32, 1500u32);
+        let frame = image::imageops::resize(
+            &image::open(&bg_path).unwrap().to_rgba8(),
+            w,
+            h,
+            image::imageops::FilterType::CatmullRom,
+        );
+        let scale = 2.0f32;
+        let dimmed = render::precompute_dimmed(&frame);
+        let mut font = crate::text::Font::embedded();
+        let mut icons = crate::icon_font::IconFont::embedded();
+
+        // ---- 1. annotate: selection + annotations + toolbar
+        let sel = Rect { x: 280, y: 130, w: 1840, h: 1240 };
+        let sel_t = sel.as_tuple_u32();
+        let mut buf = vec![0u32; (w * h) as usize];
+        render::blit_background_dimmed(&mut buf, w, h, &frame, &dimmed, Some(sel_t));
+        render::draw_selection_outline(&mut buf, w, h, sel_t, toolbar::THEME_COLOR);
+        let red = annotate::AnnotationStyle { color: Color::Red, stroke: Stroke::Medium };
+        let yellow = annotate::AnnotationStyle { color: Color::Yellow, stroke: Stroke::Medium };
+        // Coordinates target the illustrative browser + chat mockup in the
+        // README background (window 300,150 – 2100,1350).
+        let anns = [
+            // Box the code block.
+            Annotation::Rect { rect: Rect { x: 896, y: 794, w: 1068, h: 178 }, style: red },
+            // Circle the shortcut chip in step 1.
+            Annotation::Ellipse { rect: Rect { x: 1352, y: 592, w: 204, h: 78 }, style: yellow },
+            // Arrow from the note to the code block.
+            Annotation::Arrow { from: (1500, 1090), to: (1360, 984), style: red },
+            // Redact the chat history.
+            Annotation::Mosaic { rect: Rect { x: 330, y: 528, w: 400, h: 230 }, block_size: 14 },
+            Annotation::Text {
+                origin: (1516, 1066),
+                content: "Set your own hotkey 👆".into(),
+                style: red,
+            },
+        ];
+        for a in &anns {
+            annotate_render::draw_annotation_on_buf(&mut buf, w, h, &frame, a, &mut font, None);
+        }
+        render::draw_anchors(&mut buf, w, h, sel);
+        let tb = toolbar::Toolbar::layout(sel, (w, h), scale);
+        toolbar::draw_toolbar(
+            &mut buf, w, h, &tb, annotate::Tool::Arrow, red, true, false, false,
+            toolbar::ToolbarHit::None, &mut icons, &mut font,
+        );
+        render::draw_size_label(&mut buf, w, h, sel, (w, h), (w, h), &mut font, scale);
+        let shot = to_rgba(&buf, w, h);
+        // Crop: selection (+ size label above) through the style bar.
+        let x0 = (sel.x - 70).max(0) as u32;
+        let y0 = (sel.y - 90).max(0) as u32;
+        let x1 = ((sel.x + sel.w + 70) as u32).min(w);
+        let y1 = ((tb.sub.0 .1 + tb.sub.1 .1 + 50) as u32).min(h);
+        let crop = image::imageops::crop_imm(&shot, x0, y0, x1 - x0, y1 - y0).to_image();
+        crop.save(format!("{out_dir}/annotate.png")).unwrap();
+
+        // ---- 2. toolbar close-up
+        let (tx, ty) = tb.main.0;
+        let tw = tb.main.1 .0;
+        let th = tb.sub.0 .1 + tb.sub.1 .1 - ty;
+        let pad = 40;
+        image::imageops::crop_imm(&shot, (tx - pad) as u32, (ty - pad) as u32, (tw + 2 * pad) as u32, (th + 2 * pad) as u32)
+            .to_image()
+            .save(format!("{out_dir}/toolbar.png"))
+            .unwrap();
+
+        // ---- 3. magnifier while choosing a region
+        let mut buf = vec![0u32; (w * h) as usize];
+        render::blit_background_dimmed(&mut buf, w, h, &frame, &dimmed, None);
+        // Edge of the red "close" traffic light: colour + anti-aliased edge.
+        let cursor = (334, 178);
+        render::draw_magnifier(&mut buf, w, h, &frame, cursor, (w, h), &mut font, scale, false);
+        let shot = to_rgba(&buf, w, h);
+        image::imageops::crop_imm(&shot, 234, 98, 560, 620)
+            .to_image()
+            .save(format!("{out_dir}/magnifier.png"))
+            .unwrap();
     }
 }

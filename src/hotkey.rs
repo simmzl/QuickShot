@@ -2,8 +2,6 @@ use anyhow::{Context, Result};
 use global_hotkey::hotkey::HotKey;
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
 use winit::event_loop::EventLoopProxy;
 
 use crate::app::UserEvent;
@@ -96,27 +94,26 @@ pub fn register(
         screen_id: hk_screen.id(),
     }));
 
+    // Push-based: the handler runs the instant the OS delivers the hotkey
+    // and forwards straight into the winit loop. The previous 25 ms polling
+    // thread added up to a frame and a half of latency to every capture.
     let ids_fwd = ids.clone();
-    let receiver = GlobalHotKeyEvent::receiver();
-    thread::spawn(move || loop {
-        if let Ok(event) = receiver.try_recv() {
-            if event.state != HotKeyState::Pressed {
-                continue;
-            }
-            let current = ids_fwd.lock().map(|g| *g).unwrap_or_default();
-            let msg = if event.id == current.region_id {
-                Some(UserEvent::CaptureRegion)
-            } else if event.id == current.screen_id {
-                Some(UserEvent::CaptureScreen)
-            } else {
-                None
-            };
-            if let Some(m) = msg {
-                let _ = proxy.send_event(m);
-            }
+    GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
+        if event.state != HotKeyState::Pressed {
+            return;
         }
-        thread::sleep(Duration::from_millis(25));
-    });
+        let current = ids_fwd.lock().map(|g| *g).unwrap_or_default();
+        let msg = if event.id == current.region_id {
+            Some(UserEvent::CaptureRegion)
+        } else if event.id == current.screen_id {
+            Some(UserEvent::CaptureScreen)
+        } else {
+            None
+        };
+        if let Some(m) = msg {
+            let _ = proxy.send_event(m);
+        }
+    }));
 
     Ok(HotkeyGuard {
         manager,
