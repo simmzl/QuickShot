@@ -1,6 +1,6 @@
 [package]
 name = "QuickShot"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 description = "QuickShot — a small, fast screenshot daemon for macOS and Windows"
 license = "MIT OR Apache-2.0"
