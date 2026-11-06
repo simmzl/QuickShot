@@ -176,6 +176,22 @@ mod imp {
         }
     }
 
+    /// Set every pixel's alpha byte to 0xFF, split across a few threads (a
+    /// 6K frame is ~20 M pixels; one core takes ~2 ms).
+    fn force_opaque(pixels: &mut [u32]) {
+        let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, 4);
+        if threads == 1 || pixels.len() < 1 << 20 {
+            pixels.iter_mut().for_each(|p| *p |= 0xFF00_0000);
+            return;
+        }
+        let chunk = pixels.len().div_ceil(threads);
+        std::thread::scope(|s| {
+            for part in pixels.chunks_mut(chunk) {
+                s.spawn(move || part.iter_mut().for_each(|p| *p |= 0xFF00_0000));
+            }
+        });
+    }
+
     pub struct Frame<'a> {
         presenter: &'a mut Presenter,
         idx: usize,
@@ -184,6 +200,11 @@ mod imp {
 
     impl Frame<'_> {
         pub fn present(self) -> Result<()> {
+            // Renderers write 0x00RRGGBB (alpha byte 0). Even on an opaque
+            // layer the compositor can treat BGRA surfaces as premultiplied
+            // and blend them over what's behind — which visibly lifted every
+            // pixel. Make the alpha byte 255 so the surface is truly opaque.
+            force_opaque(self.pixels);
             let p = self.presenter;
             let (w, h) = p.size;
             let s = &p.surfaces[self.idx];
