@@ -72,6 +72,11 @@ pub struct OverlayHost {
     presenter: present::Presenter,
     /// Geometry the window is currently placed at (avoid redundant moves).
     placed: Option<MonitorGeom>,
+    /// App that was frontmost when the overlay opened (macOS). Re-activated
+    /// on hide so focus goes back to it instead of to whatever app macOS
+    /// picks next (often not the one the user was in).
+    #[cfg(target_os = "macos")]
+    previous_app: std::cell::RefCell<Option<objc2::rc::Retained<objc2_app_kit::NSRunningApplication>>>,
 }
 
 impl OverlayHost {
@@ -104,7 +109,13 @@ impl OverlayHost {
         // native editor control).
         window.set_ime_allowed(true);
         let presenter = present::Presenter::new(window.clone())?;
-        Ok(Self { window, presenter, placed: None })
+        Ok(Self {
+            window,
+            presenter,
+            placed: None,
+            #[cfg(target_os = "macos")]
+            previous_app: std::cell::RefCell::new(None),
+        })
     }
 
     /// Move/resize the hidden window onto `geom`'s monitor.
@@ -127,7 +138,13 @@ impl OverlayHost {
 
     fn show(&self) {
         #[cfg(target_os = "macos")]
-        make_macos_key_window(&self.window);
+        {
+            // Remember who had focus before we take it.
+            let front = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication();
+            let me = std::process::id() as i32;
+            *self.previous_app.borrow_mut() = front.filter(|a| a.processIdentifier() != me);
+            make_macos_key_window(&self.window);
+        }
         #[cfg(not(target_os = "macos"))]
         {
             self.window.set_visible(true);
@@ -137,6 +154,8 @@ impl OverlayHost {
 
     pub fn hide(&self) {
         self.window.set_visible(false);
+        #[cfg(target_os = "macos")]
+        restore_previous_app(self.previous_app.borrow_mut().take());
     }
 }
 
@@ -1391,6 +1410,25 @@ fn set_macos_window_frame(window: &Window, geom: &MonitorGeom) {
         let obj = &*(ns_window as *const AnyObject);
         let _: () = objc2::msg_send![obj, setFrame: rect, display: false];
     }
+}
+
+/// Hand focus back to the app that was frontmost before the overlay opened.
+///
+/// When our (accessory) app gives up activation, macOS activates the *next*
+/// app in its own ordering, which is frequently not the one the user was
+/// using: e.g. capturing over WeChat sent focus to a different app, and
+/// WeChat's window dropped behind it. Explicitly re-activating the
+/// remembered app restores exactly the pre-capture state, like the
+/// built-in / WeChat screenshot tools.
+#[cfg(target_os = "macos")]
+fn restore_previous_app(app: Option<objc2::rc::Retained<objc2_app_kit::NSRunningApplication>>) {
+    use objc2_app_kit::NSApplicationActivationOptions;
+    let Some(app) = app else { return };
+    if app.isTerminated() {
+        return;
+    }
+    #[allow(deprecated)]
+    let _ = app.activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps);
 }
 
 /// Set the NSWindow level via NSWindow.setLevel:.
