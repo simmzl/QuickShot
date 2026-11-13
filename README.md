@@ -6,7 +6,7 @@
 
 <p align="center">
   A tiny, instant screenshot tool for macOS and Windows.<br>
-  Press <code>⌘⇧A</code> on macOS or <code>Ctrl+Shift+A</code> on Windows to select and annotate a region.
+  Press Command + Shift + A on macOS or Ctrl + Shift + A on Windows to select and annotate a region.
 </p>
 
 <p align="center">
@@ -25,9 +25,9 @@
 
 <p align="center">
   <img src="docs/images/annotate.png" width="800" alt="QuickShot capturing a browser window with a chat conversation, annotated with a rectangle, an ellipse, an arrow, mosaic and text, with the floating toolbar below">
-  <br>
-  <sub>The captured page is an illustrative mockup, not affiliated with OpenAI.</sub>
 </p>
+
+<p align="center">If QuickShot makes screenshots easier for you, give it a ⭐ using the Star button at the top right of the repository.</p>
 
 ## Features
 

@@ -6,7 +6,7 @@
 
 <p align="center">
   小巧、秒开的截图工具，支持 macOS 和 Windows。<br>
-  按 <code>⌘⇧A</code>（macOS）或 <code>Ctrl+Shift+A</code>（Windows）开始框选和标注。
+  按 Command + Shift + A（macOS）或 Ctrl + Shift + A（Windows）开始框选和标注。
 </p>
 
 <p align="center">
@@ -25,9 +25,9 @@
 
 <p align="center">
   <img src="docs/images/annotate.png" width="800" alt="QuickShot：对浏览器中的聊天对话截图，并用矩形、椭圆、箭头、马赛克和文字做了标注，下方是浮动工具栏">
-  <br>
-  <sub>截图中的网页为示意图，与 OpenAI 无关。</sub>
 </p>
+
+<p align="center">如果 QuickShot 也让你截图更顺手，欢迎点一下仓库右上角的 ⭐ Star。</p>
 
 ## 功能
 
