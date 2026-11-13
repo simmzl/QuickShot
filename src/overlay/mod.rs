@@ -147,6 +147,8 @@ impl OverlayHost {
         }
         #[cfg(not(target_os = "macos"))]
         {
+            #[cfg(windows)]
+            self.window.set_window_level(winit::window::WindowLevel::AlwaysOnTop);
             self.window.set_visible(true);
             self.window.focus_window();
         }
@@ -154,6 +156,9 @@ impl OverlayHost {
 
     pub fn hide(&self) {
         self.window.set_visible(false);
+        // Promote the next capture anew, above pins created between sessions.
+        #[cfg(windows)]
+        self.window.set_window_level(winit::window::WindowLevel::Normal);
         #[cfg(target_os = "macos")]
         restore_previous_app(self.previous_app.borrow_mut().take());
     }
@@ -200,6 +205,8 @@ pub struct Overlay {
     pub(crate) press_pos: Option<(i32, i32)>,
     pub(crate) snap_at_press: Option<Rect>,
     window_list: Vec<snap::WindowEntry>,
+    #[cfg(windows)]
+    elements: snap::ElementCache,
     /// Active annotation drag (Move tool): when present, history excludes
     /// the dragged annotation and redraw paints it at the cursor's current
     /// delta from `press_frame`.
@@ -209,6 +216,8 @@ pub struct Overlay {
     pub(crate) hovered_annotation_idx: Option<usize>,
     /// Toolbar button under the cursor (drives hover highlight).
     toolbar_hover: toolbar::ToolbarHit,
+    toolbar_origin: Option<(i32, i32)>,
+    grip_press_offset: Option<(i32, i32)>,
     /// When the C shortcut last copied a color (shows a "Copied" badge).
     color_copied_at: Option<std::time::Instant>,
     /// Used by the native text editor to wake the event loop when it
@@ -258,9 +267,13 @@ impl Overlay {
             press_pos: None,
             snap_at_press: None,
             window_list,
+            #[cfg(windows)]
+            elements: snap::ElementCache::new(monitor_geom),
             annotation_drag: None,
             hovered_annotation_idx: None,
             toolbar_hover: toolbar::ToolbarHit::None,
+            toolbar_origin: None,
+            grip_press_offset: None,
             color_copied_at: None,
             proxy,
         };
@@ -268,7 +281,7 @@ impl Overlay {
         // Seed the cursor so the magnifier / snap highlight are right on the
         // very first frame (before any CursorMoved arrives).
         overlay.cursor = overlay.initial_cursor(monitor_geom);
-        overlay.snap_target = snap::window_under_cursor(overlay.cursor, &overlay.window_list);
+        overlay.snap_target = overlay.hover_target();
 
         // Paint the first frame while still hidden, then reveal — no flash of
         // stale content from the previous session.
@@ -299,6 +312,13 @@ impl Overlay {
         (host, font, icon_font)
     }
 
+    fn hover_target(&mut self) -> Option<Rect> {
+        #[cfg(windows)]
+        { self.elements.target(self.cursor, &self.window_list, &self.proxy) }
+        #[cfg(not(windows))]
+        { snap::window_under_cursor(self.cursor, &self.window_list) }
+    }
+
     fn initial_cursor(&self, geom: &MonitorGeom) -> (i32, i32) {
         match crate::capture::cursor_global() {
             Some((gx, gy)) => {
@@ -321,6 +341,17 @@ impl Overlay {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x as i32, position.y as i32);
+
+                #[cfg(windows)]
+                if self.grip_press_offset.is_some() && !crate::windows_mouse::has_left_capture(&self.window) {
+                    self.grip_press_offset = None;
+                    // Fall through to normal hover handling at the new position.
+                }
+                if let Some((dx, dy)) = self.grip_press_offset {
+                    self.toolbar_origin = Some((self.cursor.0 - dx, self.cursor.1 - dy));
+                    self.window.request_redraw();
+                    return Outcome::Continue;
+                }
 
                 // If a PendingDraw is in flight, update its endpoint.
                 if self.pending_draw.is_some() {
@@ -357,6 +388,7 @@ impl Overlay {
                             rect,
                             (size.width, size.height),
                             self.scale_factor,
+                            self.toolbar_origin,
                         );
                         let hover = tb.hit_with_tool(self.cursor, self.tool);
                         if hover != self.toolbar_hover {
@@ -364,10 +396,10 @@ impl Overlay {
                             self.window.request_redraw();
                         }
                         if tb.contains(self.cursor, self.tool) {
-                            self.window.set_cursor(if hover == toolbar::ToolbarHit::None {
-                                winit::window::CursorIcon::Default
-                            } else {
-                                winit::window::CursorIcon::Pointer
+                            self.window.set_cursor(match hover {
+                                toolbar::ToolbarHit::None => winit::window::CursorIcon::Default,
+                                toolbar::ToolbarHit::Grip => winit::window::CursorIcon::Grab,
+                                _ => winit::window::CursorIcon::Pointer,
                             });
                             if self.hovered_annotation_idx.take().is_some() {
                                 self.window.request_redraw();
@@ -422,10 +454,7 @@ impl Overlay {
                             }
                         } else {
                             // Hover-snap: recompute snap_target from cursor.
-                            let new_target = snap::window_under_cursor(
-                                self.cursor,
-                                &self.window_list,
-                            );
+                            let new_target = self.hover_target();
                             if new_target != self.snap_target {
                                 self.snap_target = new_target;
                                 self.window.request_redraw();
@@ -447,6 +476,24 @@ impl Overlay {
                 button: MouseButton::Left,
                 ..
             } => self.handle_left_release(),
+            #[cfg(windows)]
+            WindowEvent::KeyboardInput {
+                event: KeyEvent {
+                    logical_key: Key::Named(NamedKey::Alt),
+                    state: ElementState::Pressed,
+                    repeat: false,
+                    ..
+                },
+                is_synthetic: false,
+                ..
+            } if self.state == OverlayState::Idle && self.press_pos.is_none() => {
+                self.elements.element_mode = !self.elements.element_mode;
+                if self.snap_target.is_some() {
+                    self.snap_target = self.hover_target();
+                }
+                self.window.request_redraw();
+                Outcome::Continue
+            }
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -458,6 +505,13 @@ impl Overlay {
                 ..
             } => self.handle_key(logical_key),
             WindowEvent::RedrawRequested => {
+                // A background element lookup may have completed under a stationary pointer.
+                // Freeze the highlighted rectangle once the button has been pressed.
+                #[cfg(windows)]
+                if self.elements.element_mode && self.state == OverlayState::Idle
+                    && self.press_pos.is_none() && self.snap_target.is_some() {
+                    self.snap_target = self.hover_target();
+                }
                 if let Err(e) = self.redraw() {
                     eprintln!("redraw error: {e:?}");
                 }
@@ -470,11 +524,26 @@ impl Overlay {
             // Text entry (incl. IME composition) is owned by the native
             // editor control; winit's own IME events are irrelevant here.
             WindowEvent::Ime(_) => Outcome::Continue,
+            #[cfg(windows)]
+            WindowEvent::CursorEntered { .. } if self.state == OverlayState::Idle && self.press_pos.is_none() => {
+                if let Some(cursor) = crate::windows_mouse::client_position(&self.window) {
+                    self.cursor = cursor;
+                    self.snap_target = self.hover_target();
+                    self.window.request_redraw();
+                }
+                Outcome::Continue
+            }
             WindowEvent::CursorLeft { .. } => {
                 if self.snap_target.is_some() {
                     self.snap_target = None;
                     self.window.request_redraw();
                 }
+                Outcome::Continue
+            }
+            WindowEvent::Focused(false) if self.grip_press_offset.take().is_some() => {
+                self.toolbar_hover = toolbar::ToolbarHit::None;
+                self.window.set_cursor(winit::window::CursorIcon::Default);
+                self.window.request_redraw();
                 Outcome::Continue
             }
             WindowEvent::CloseRequested => Outcome::Cancelled,
@@ -577,6 +646,8 @@ impl Overlay {
     }
 
     fn handle_left_press(&mut self) -> Outcome {
+        // A fresh press also terminates a previous drag whose release was lost.
+        self.grip_press_offset = None;
         // If hint badges are up, the click only dismisses them — don't
         // forward to any other handler so the user doesn't accidentally start
         // a drag/draw while reading shortcuts.
@@ -606,27 +677,26 @@ impl Overlay {
             }
             OverlayState::Dragging { .. } => Outcome::Continue,
             OverlayState::Adjusting { rect, .. } => {
-                if is_double_click {
-                    match state::on_double_click_adjusting(rect, self.cursor) {
-                        Transition::Confirm(r) => {
-                            // Commit any in-flight TextEdit before confirming the
-                            // overlay so we don't silently lose the user's text.
-                            self.commit_text_edit();
-                            return Outcome::Confirmed(r);
-                        }
-                        Transition::Cancel => return Outcome::Cancelled,
-                        Transition::Stay => {}
-                    }
-                }
-
                 // Toolbar click takes priority over everything else.
                 let win_size = self.window.inner_size();
                 let tb = toolbar::Toolbar::layout(
                     rect,
                     (win_size.width, win_size.height),
                     self.scale_factor,
+                    self.toolbar_origin,
                 );
+                if tb.contains(self.cursor, self.tool) {
+                    self.last_click = None;
+                }
                 match tb.hit_with_tool(self.cursor, self.tool) {
+                    toolbar::ToolbarHit::Grip => {
+                        self.commit_text_edit();
+                        self.grip_press_offset = Some((self.cursor.0 - tb.origin.0, self.cursor.1 - tb.origin.1));
+                        self.toolbar_hover = toolbar::ToolbarHit::Grip;
+                        self.window.set_cursor(winit::window::CursorIcon::Grabbing);
+                        self.window.request_redraw();
+                        return Outcome::Continue;
+                    }
                     toolbar::ToolbarHit::Tool(t) => {
                         if t != annotate::Tool::Text {
                             self.commit_text_edit();
@@ -688,6 +758,19 @@ impl Overlay {
                         if tb.contains(self.cursor, self.tool) {
                             return Outcome::Continue;
                         }
+                    }
+                }
+
+                if is_double_click {
+                    match state::on_double_click_adjusting(rect, self.cursor) {
+                        Transition::Confirm(r) => {
+                            // Commit any in-flight TextEdit before confirming the
+                            // overlay so we don't silently lose the user's text.
+                            self.commit_text_edit();
+                            return Outcome::Confirmed(r);
+                        }
+                        Transition::Cancel => return Outcome::Cancelled,
+                        Transition::Stay => {}
                     }
                 }
 
@@ -806,6 +889,20 @@ impl Overlay {
     }
 
     fn handle_left_release(&mut self) -> Outcome {
+        if self.grip_press_offset.take().is_some() {
+            if let OverlayState::Adjusting { rect, .. } = self.state {
+                let size = self.window.inner_size();
+                let bar = toolbar::Toolbar::layout(rect, (size.width, size.height), self.scale_factor, self.toolbar_origin);
+                self.toolbar_hover = bar.hit_with_tool(self.cursor, self.tool);
+                self.window.set_cursor(if self.toolbar_hover == toolbar::ToolbarHit::Grip {
+                    winit::window::CursorIcon::Grab
+                } else {
+                    winit::window::CursorIcon::Default
+                });
+            }
+            self.window.request_redraw();
+            return Outcome::Continue;
+        }
         // Commit an in-flight annotation draw first.
         if let Some(pending) = self.pending_draw.take() {
             if let Some(ann) = pending.finalize() {
@@ -1042,10 +1139,6 @@ impl Overlay {
         (x, y)
     }
 
-    pub(crate) fn scale_factor(&self) -> f32 {
-        self.scale_factor
-    }
-
     /// Produce the final cropped + annotated RGBA image for export to clipboard / file.
     pub fn flatten_for_export(&mut self, rect: Rect) -> image::RgbaImage {
         let frame_rect = self.window_rect_to_frame_rect(rect);
@@ -1219,7 +1312,7 @@ impl Overlay {
 
             // Toolbar
             if let Some(sel_win) = sel_rect {
-                let tb = toolbar::Toolbar::layout(sel_win, (w, h), scale);
+                let tb = toolbar::Toolbar::layout(sel_win, (w, h), scale, self.toolbar_origin);
                 toolbar::draw_toolbar(
                     &mut buf,
                     w,
@@ -1249,6 +1342,10 @@ impl Overlay {
                 self.color_copied_at
                     .is_some_and(|t| t.elapsed() < render::COPIED_BADGE_DURATION),
             );
+        }
+        #[cfg(windows)]
+        if self.state == OverlayState::Idle {
+            render::draw_snap_mode(&mut buf, w, h, font, scale, self.elements.element_mode, cursor);
         }
         if show_label {
             if let Some(r) = sel_rect {
@@ -1564,7 +1661,7 @@ mod readme_images {
             annotate_render::draw_annotation_on_buf(&mut buf, w, h, &frame, a, &mut font, None);
         }
         render::draw_anchors(&mut buf, w, h, sel);
-        let tb = toolbar::Toolbar::layout(sel, (w, h), scale);
+        let tb = toolbar::Toolbar::layout(sel, (w, h), scale, None);
         toolbar::draw_toolbar(
             &mut buf, w, h, &tb, annotate::Tool::Arrow, red, true, false, false,
             toolbar::ToolbarHit::None, &mut icons, &mut font,

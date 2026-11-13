@@ -11,7 +11,7 @@ The packaging scripts derive the artifact filenames **and** the macOS
 git tag:
 
 - `scripts/package.sh`  → `dist/QuickShot-<version>.dmg`
-- `scripts/package.ps1` → `dist/QuickShot-<version>-windows-x64.zip`
+- `scripts/package.ps1` → `dist/QuickShot-<version>-windows-x64.zip` and `dist/QuickShot-<version>-windows-x64-Setup.exe`
 
 The release **title** uses the tag (`QuickShot ${{ github.ref_name }}`), but the
 **files inside it** use `Cargo.toml`'s version. So if you bump the tag without
@@ -42,8 +42,8 @@ two in lockstep.
    ```
 5. The **Release** workflow runs automatically:
    - `build-macos` — universal `.app` + `.dmg`
-   - `build-windows` — MSVC `.exe` + `.zip`
-   - `release` — publishes a single GitHub Release with both artifacts
+   - `build-windows` — MSVC binary packaged as an NSIS installer and portable ZIP
+   - `release` — publishes a single GitHub Release with all three artifacts
 
    Both build jobs must pass before `release` runs. If a build fails, fix it on
    `master`, then cut the next patch tag (you can't re-run a tag that already
@@ -58,7 +58,7 @@ gh run list --workflow Release --limit 1
 gh release view v1.1.6
 ```
 
-Artifacts should be named `QuickShot-1.1.6.dmg` and
+Artifacts should be named `QuickShot-1.1.6.dmg`, `QuickShot-1.1.6-windows-x64-Setup.exe` and
 `QuickShot-1.1.6-windows-x64.zip`.
 
 ## Notes

@@ -12,12 +12,15 @@ use crate::hotkey::HotkeyGuard;
 use crate::overlay::{state::Rect, Outcome, Overlay};
 use crate::tray::TrayGuard;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum UserEvent {
     /// `Cmd/Ctrl+Shift+A` pressed, or "Capture Region" menu item clicked.
     CaptureRegion,
     /// `Cmd/Ctrl+Shift+S` pressed, or "Capture Screen" menu item clicked.
     CaptureScreen,
+    FullscreenSaved {
+        notice: Option<crate::notification::CaptureNotice>,
+    },
     /// "Edit Config\u{2026}" menu item clicked — opens the config.toml in default editor.
     EditConfig,
     /// "Start at Login" check item clicked — toggles autostart install/uninstall.
@@ -35,6 +38,11 @@ pub enum UserEvent {
 }
 
 pub struct App {
+    flash: Option<crate::flash::Flash>,
+    pending_notifications: Vec<crate::notification::CaptureNotice>,
+    fullscreen_writer: Option<crate::fullscreen_save::SaveQueue>,
+    pending_saves: usize,
+    quitting: bool,
     overlay: Option<Overlay>,
     /// Reusable hidden overlay window (+ surface) — see `OverlayHost`.
     /// `None` while a session holds it (or before first creation).
@@ -58,9 +66,14 @@ impl App {
         proxy: EventLoopProxy<UserEvent>,
         hotkey_guard: HotkeyGuard,
     ) -> Self {
-        let region_label = config.hotkey.region.raw.clone();
-        let fullscreen_label = config.hotkey.fullscreen.raw.clone();
+        let region_label = config.hotkey.region.menu_label();
+        let fullscreen_label = config.hotkey.fullscreen.menu_label();
         Self {
+            flash: None,
+            pending_notifications: Vec::new(),
+            fullscreen_writer: None,
+            pending_saves: 0,
+            quitting: false,
             overlay: None,
             host: None,
             fonts: None,
@@ -79,9 +92,15 @@ impl App {
     /// region/fullscreen combos changed, and updates the tray menu labels.
     /// On hotkey-registration failure, the previous bindings are preserved.
     fn reload_config(&mut self) {
-        let new_cfg = crate::config::Config::load();
-        let new_region_raw = new_cfg.hotkey.region.raw.clone();
-        let new_screen_raw = new_cfg.hotkey.fullscreen.raw.clone();
+        let new_cfg = match crate::config::Config::read_existing() {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!("reload: {error:#}; keeping previous settings");
+                return;
+            }
+        };
+        let new_region_raw = new_cfg.hotkey.region.menu_label();
+        let new_screen_raw = new_cfg.hotkey.fullscreen.menu_label();
         let hotkey_changed = new_region_raw != self.region_label
             || new_screen_raw != self.fullscreen_label;
 
@@ -107,6 +126,17 @@ impl App {
                     }
                     Err(e) => {
                         eprintln!("reload: hotkey re-register failed: {e:?}");
+                        #[cfg(windows)]
+                        {
+                            let mut dialog = rfd::MessageDialog::new()
+                                .set_title("QuickShot")
+                                .set_description(format!("Could not apply the new shortcut. It may already be in use.\n\n{e:#}"))
+                                .set_level(rfd::MessageLevel::Warning);
+                            if let Some(overlay) = &self.overlay {
+                                dialog = dialog.set_parent(overlay.window.as_ref());
+                            }
+                            dialog.show();
+                        }
                         // Keep the old config + labels — `guard` rolled back
                         // to the previous binding internally.
                         return;
@@ -276,21 +306,23 @@ impl App {
         #[cfg(target_os = "macos")]
         set_macos_activation_policy(0);
 
-        let default_name = format!(
-            "QuickShot-{}.png",
-            time::OffsetDateTime::now_local()
-                .unwrap_or_else(|_| time::OffsetDateTime::now_utc())
-                .format(time::macros::format_description!(
-                    "[year]-[month]-[day]-[hour]-[minute]-[second]"
-                ))
-                .unwrap_or_else(|_| "screenshot".to_string()),
+        let default_name = crate::file_save::screenshot_filename(
+            &self.config.save.filename_template, (img_w, img_h),
+            crate::file_save::CaptureMode::Region, crate::file_save::capture_time(),
         );
-
-        let path = rfd::FileDialog::new()
+        let state = crate::config::config_path().map(|p| p.with_file_name("last-save-directory"));
+        let mut dialog = rfd::FileDialog::new()
             .set_title("Save Screenshot")
-            .set_file_name(&default_name)
-            .add_filter("PNG image", &["png"])
-            .save_file();
+            .set_file_name(std::path::Path::new(&default_name).file_name()
+                .and_then(|name| name.to_str()).unwrap_or("QuickShot.png"))
+            .add_filter("PNG image", &["png"]);
+        if let Some(dir) = crate::file_save::dialog_directory(state.as_deref(), &self.config.save.directory) {
+            dialog = dialog.set_directory(dir);
+        }
+        // An owned dialog stays above the topmost capture overlay on Windows.
+        #[cfg(windows)]
+        let dialog = dialog.set_parent(window_handle.as_ref());
+        let path = dialog.save_file();
 
         #[cfg(target_os = "macos")]
         set_macos_activation_policy(1);
@@ -302,7 +334,14 @@ impl App {
                     p.set_extension("png");
                 }
                 match final_image.save(&p) {
-                    Ok(()) => println!("saved {}x{} \u{2192} {}", img_w, img_h, p.display()),
+                    Ok(()) => {
+                        println!("saved {}x{} → {}", img_w, img_h, p.display());
+                        if let Some(state) = state {
+                            if let Err(error) = crate::file_save::remember_dialog_directory(&state, &p) {
+                                eprintln!("remember save directory: {error:#}");
+                            }
+                        }
+                    }
                     Err(e) => eprintln!("save error: {e:?}"),
                 }
                 // Saved — close the overlay.
@@ -325,33 +364,14 @@ impl App {
             return;
         };
         let final_image = overlay.flatten_for_export(rect);
-        let (img_w, img_h) = final_image.dimensions();
-
-        // Compute pin position + logical size.
-        let scale_factor = overlay.scale_factor();
-        // outer_position() returns PhysicalPosition. compute_pin_screen_position
-        // expects logical coords for the first arg. Convert.
-        let overlay_outer_physical = overlay
-            .window
-            .outer_position()
-            .unwrap_or_default();
-        let overlay_outer_logical = (
-            (overlay_outer_physical.x as f32 / scale_factor).round() as i32,
-            (overlay_outer_physical.y as f32 / scale_factor).round() as i32,
-        );
+        let scale = overlay.window.scale_factor();
         let screen_pos = crate::pin::compute_pin_screen_position(
-            overlay_outer_logical,
-            (rect.x, rect.y),
-            scale_factor,
-        );
-        let logical_size = (
-            (img_w as f32 / scale_factor).round() as u32,
-            (img_h as f32 / scale_factor).round() as u32,
+            overlay.window.inner_position().unwrap_or_default(), (rect.x, rect.y), scale,
         );
         self.close_overlay();
         self.export_image(&final_image, "pinned");
 
-        match crate::pin::PinWindow::create(event_loop, final_image, screen_pos, logical_size) {
+        match crate::pin::PinWindow::create(event_loop, final_image, screen_pos, scale) {
             Ok(pin_win) => {
                 let id = pin_win.window.id();
                 let idx = self.pins.len();
@@ -385,29 +405,47 @@ impl App {
             return;
         }
         match capture::capture_at_cursor() {
-            Ok((captured, _geom)) => {
+            Ok((captured, geom)) => {
                 let frame = captured.frame;
                 let (w, h) = frame.dimensions();
-                if let Err(e) = clipboard::put_image(&frame) {
-                    eprintln!("clipboard error: {e:?}");
-                    return;
+                let feedback = self.config.general.fullscreen_feedback;
+                if feedback.flashes() {
+                    match crate::flash::Flash::show(geom) {
+                        Ok(flash) => self.flash = Some(flash),
+                        Err(error) => eprintln!("capture flash: {error:#}"),
+                    }
                 }
-                println!("copied {}x{} (full screen) to clipboard", w, h);
+                let copied = match clipboard::put_image(&frame) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        eprintln!("fullscreen clipboard: {error:#}");
+                        false
+                    }
+                };
                 if self.config.save.enabled {
-                    match crate::file_save::save_png(
-                        &frame,
-                        &self.config.save.directory,
-                        &self.config.save.filename_template,
-                        crate::file_save::CaptureMode::Fullscreen,
-                    ) {
-                        Ok(path) => println!("saved \u{2192} {}", path.display()),
-                        Err(e) => eprintln!("save error: {e:?}"),
+                    let queue = self.fullscreen_writer.get_or_insert_with(|| {
+                        let proxy = self.proxy.clone();
+                        crate::fullscreen_save::SaveQueue::new(move |notice| {
+                            let _ = proxy.send_event(UserEvent::FullscreenSaved { notice });
+                        })
+                    });
+                    let capture = crate::fullscreen_save::Capture {
+                        frame,
+                        save: self.config.save.clone(),
+                        captured_at: crate::file_save::capture_time(),
+                        notify: feedback.notifies(),
+                        copied,
+                    };
+                    if let Err(reason) = queue.submit(capture) {
+                        eprintln!("fullscreen save: {reason}");
+                        if feedback.notifies() && copied {
+                            self.pending_notifications.push(crate::notification::CaptureNotice::busy(w, h));
+                        }
+                    } else {
+                        self.pending_saves += 1;
                     }
-                }
-                if self.config.general.notification_on_fullscreen {
-                    if let Err(e) = crate::notification::screenshot_copied(w, h) {
-                        eprintln!("notification error: {e:?}");
-                    }
+                } else if feedback.notifies() && copied {
+                    self.pending_notifications.push(crate::notification::CaptureNotice::new(w, h, None));
                 }
             }
             Err(e) => {
@@ -483,6 +521,22 @@ impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, _event_loop: &ActiveEventLoop) {}
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(flash) = &self.flash {
+            if std::time::Instant::now() < flash.until {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(flash.until));
+                return;
+            }
+            self.flash = None;
+        }
+        // Deliver after the full-monitor flash window is gone, including for clipboard-only captures.
+        for notice in self.pending_notifications.drain(..) {
+            if let Err(error) = notice.show() {
+                eprintln!("capture notification: {error:#}");
+            }
+        }
+        if self.quitting && self.pending_saves == 0 {
+            event_loop.exit();
+        }
         event_loop.set_control_flow(ControlFlow::Wait);
     }
 
@@ -517,14 +571,24 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        // Drain accepted PNG writes and deliver their notifications before quitting.
+        if self.quitting && !matches!(event, UserEvent::FullscreenSaved { .. }) {
+            return;
+        }
         match event {
             UserEvent::CaptureRegion => {
+                self.flash = None;
                 if let Err(e) = self.open_overlay(event_loop) {
                     eprintln!("open overlay error: {e:?}");
                 }
             }
             UserEvent::CaptureScreen => {
+                self.flash = None;
                 self.capture_full_screen();
+            }
+            UserEvent::FullscreenSaved { notice } => {
+                self.pending_saves -= 1;
+                self.pending_notifications.extend(notice);
             }
             UserEvent::EditConfig => {
                 self.edit_config();
@@ -536,7 +600,8 @@ impl ApplicationHandler<UserEvent> for App {
                 self.reload_config();
             }
             UserEvent::Quit => {
-                event_loop.exit();
+                self.quitting = true;
+                self.flash = None;
             }
             UserEvent::Redraw => {
                 if let Some(overlay) = self.overlay.as_ref() {

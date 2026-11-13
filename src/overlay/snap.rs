@@ -1,18 +1,20 @@
 //! Window enumeration + cursor-to-window hit testing for smart snap mode.
 //!
 //! macOS uses CGWindowListCopyWindowInfo (already permitted by the existing
-//! Screen Recording grant — no new permission prompt). Windows / Linux paths
-//! return empty lists for now.
+//! Screen Recording grant). Windows enumerates native windows in stacking order
+//! and refines the hovered window using UI Automation.
 
 use super::state::Rect;
 use crate::capture::MonitorGeom;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WindowEntry {
-    /// In overlay-window coordinates (monitor-local — already translated from
-    /// CG screen-space by subtracting the monitor's origin).
+    /// Physical pixels relative to the captured monitor.
     pub bounds: Rect,
-    pub layer: i32,
+    #[cfg(windows)]
+    pub hwnd: isize,
+    #[cfg(windows)]
+    pub pid: u32,
 }
 
 /// Return the bounds of the topmost window whose rect contains `cursor`,
@@ -176,7 +178,6 @@ pub fn enumerate_windows(
                 w: phys_w,
                 h: phys_h,
             },
-            layer,
         });
     }
 
@@ -258,13 +259,34 @@ fn read_string(
     Some(s.to_string())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::{enumerate_windows, ElementCache};
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn enumerate_windows(
     _monitor_geom: &MonitorGeom,
     _my_pid: u32,
     _scale_factor: f32,
 ) -> Vec<WindowEntry> {
     Vec::new()
+}
+
+/// Clip physical desktop coordinates to the captured monitor (or containing window).
+#[cfg(any(windows, test))]
+fn clipped(left: i32, top: i32, right: i32, bottom: i32, outer: Rect) -> Option<Rect> {
+    let x = left.max(outer.x);
+    let y = top.max(outer.y);
+    let w = right.min(outer.x.saturating_add(outer.w)).saturating_sub(x);
+    let h = bottom.min(outer.y.saturating_add(outer.h)).saturating_sub(y);
+    (w > 0 && h > 0).then_some(Rect { x, y, w, h })
+}
+
+#[cfg(any(windows, test))]
+fn element_at(cursor: (i32, i32), window: Rect, elements: &[Rect]) -> Rect {
+    elements.iter().filter(|r| r.contains(cursor))
+        .min_by_key(|r| i64::from(r.w) * i64::from(r.h)).copied().unwrap_or(window)
 }
 
 /// Returns true if the cursor has moved at least 4 pixels (Manhattan
@@ -278,16 +300,34 @@ pub fn drag_threshold_exceeded(start: (i32, i32), now: (i32, i32)) -> bool {
 mod tests {
     use super::*;
 
-    fn entry(x: i32, y: i32, w: i32, h: i32, layer: i32) -> WindowEntry {
-        WindowEntry { bounds: Rect { x, y, w, h }, layer }
+    fn entry(x: i32, y: i32, w: i32, h: i32) -> WindowEntry {
+        WindowEntry { bounds: Rect { x, y, w, h }, #[cfg(windows)] hwnd: 0, #[cfg(windows)] pid: 0 }
+    }
+
+    #[test]
+    fn element_snap_uses_innermost_visible_control_then_window_background() {
+        let window = Rect { x: 10, y: 10, w: 640, h: 400 };
+        let panel = Rect { x: 20, y: 40, w: 300, h: 200 };
+        let button = Rect { x: 40, y: 70, w: 60, h: 30 };
+        assert_eq!(element_at((50, 80), window, &[panel, button]), button);
+        assert_eq!(element_at((25, 48), window, &[button, panel]), panel);
+        assert_eq!(element_at((550, 15), window, &[button, panel]), window);
+    }
+
+    #[test]
+    fn clips_spanning_window_to_negative_origin_monitor_in_physical_pixels() {
+        let monitor = Rect { x: -1920, y: -100, w: 1920, h: 1080 };
+        let rect = clipped(-700, -200, 150, 140, monitor).unwrap();
+        assert_eq!(rect.translate(1920, 100), Rect { x: 1220, y: 0, w: 700, h: 240 });
+        assert_eq!(clipped(0, 0, 40, 80, monitor), None);
     }
 
     #[test]
     fn window_under_cursor_returns_topmost() {
         // Both entries contain (75, 75); the first (topmost in z-order) wins.
         let entries = vec![
-            entry(0, 0, 200, 200, 0),
-            entry(50, 50, 200, 200, 0),
+            entry(0, 0, 200, 200),
+            entry(50, 50, 200, 200),
         ];
         assert_eq!(
             window_under_cursor((75, 75), &entries),
@@ -297,7 +337,7 @@ mod tests {
 
     #[test]
     fn window_under_cursor_returns_none_when_no_match() {
-        let entries = vec![entry(0, 0, 100, 100, 0)];
+        let entries = vec![entry(0, 0, 100, 100)];
         assert_eq!(window_under_cursor((500, 500), &entries), None);
     }
 
@@ -309,8 +349,8 @@ mod tests {
     #[test]
     fn window_under_cursor_finds_only_match() {
         let entries = vec![
-            entry(0, 0, 100, 100, 0),
-            entry(200, 200, 100, 100, 0),
+            entry(0, 0, 100, 100),
+            entry(200, 200, 100, 100),
         ];
         assert_eq!(
             window_under_cursor((250, 250), &entries),

@@ -1,13 +1,13 @@
 //! Floating annotation toolbar shown in the Adjusting state.
 //!
 //! Visual design (all sizes in points, multiplied by the display scale):
-//!   * Main bar — 42pt tall, 12pt corner radius, near-black translucent
+//!   * Main bar — 52pt tall, 14pt corner radius, near-black translucent
 //!     surface with a hairline border and soft drop shadow. Groups:
 //!     [7 tools] | [undo redo] | [pin save] | [cancel  confirm].
 //!   * Style bar — a second, smaller pill under the main bar holding the
 //!     color swatches and stroke sizes. Hidden for the Move tool (no style
 //!     applies); colors dim under Mosaic (stroke = block size there).
-//!   * 32pt hit targets, 18pt Lucide icons, hover highlight, accent-tinted
+//!   * 40pt hit targets, 22pt Lucide icons, hover highlight, accent-tinted
 //!     active tool, and an accent-filled primary "confirm" button.
 //!
 //! Layout is pure (testable); drawing paints straight into softbuffer.
@@ -16,18 +16,19 @@ use super::annotate::{AnnotationStyle, Color, Stroke, Tool};
 use super::state::Rect;
 
 // ---- metrics (points) -------------------------------------------------------
-const BAR_PAD: f32 = 5.0;
-const BTN: f32 = 32.0;
+const GRIP_WIDTH: f32 = 24.0;
+const BAR_PAD: f32 = 6.0;
+const BTN: f32 = 40.0;
 const BTN_GAP: f32 = 2.0;
 const SEP_W: f32 = 13.0;
-const BAR_RADIUS: f32 = 12.0;
-const BTN_RADIUS: f32 = 8.0;
-const ICON_PT: f32 = 18.0;
-const SUB_H: f32 = 34.0;
+const BAR_RADIUS: f32 = 14.0;
+const BTN_RADIUS: f32 = 10.0;
+const ICON_PT: f32 = 22.0;
+const SUB_H: f32 = 42.0;
 const SUB_GAP: f32 = 6.0;
-const SUB_CELL: f32 = 24.0;
+const SUB_CELL: f32 = 30.0;
 const SUB_CELL_GAP: f32 = 4.0;
-const SWATCH_R: f32 = 8.0;
+const SWATCH_R: f32 = 10.0;
 const EDGE_GAP: f32 = 8.0; // distance from the selection edge
 const SCREEN_MARGIN: f32 = 6.0;
 
@@ -63,8 +64,7 @@ const ICON_PIN: char = '\u{e259}'; // pin
 const ICON_SAVE: char = '\u{e14d}'; // save
 
 pub struct Toolbar {
-    /// Bounding box of both bars (layout tests / future callers).
-    #[allow(dead_code)]
+    /// Top-left of the group, used to preserve the grab offset.
     pub origin: (i32, i32),
     #[allow(dead_code)]
     pub size: (i32, i32),
@@ -75,6 +75,7 @@ pub struct Toolbar {
     /// x-centers of the separators in the main bar.
     pub main_seps: Vec<i32>,
     pub sub_sep: i32,
+    pub grip: IconButton,
     pub tool_buttons: Vec<ToolButton>,
     pub undo_button: IconButton,
     pub redo_button: IconButton,
@@ -112,6 +113,7 @@ pub struct StrokeButton {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolbarHit {
+    Grip,
     Tool(Tool),
     Undo,
     Redo,
@@ -138,24 +140,26 @@ fn style_bar_visible(tool: Tool) -> bool {
 
 impl Toolbar {
     /// `scale` = display backing scale (physical px per point).
-    pub fn layout(selection: Rect, window_size: (u32, u32), scale: f32) -> Toolbar {
-        let s = scale.max(0.5);
-        let px = |v: f32| (v * s).round() as i32;
+    pub fn layout(selection: Rect, window_size: (u32, u32), scale: f32, origin: Option<(i32, i32)>) -> Toolbar {
+        let groups = [TOOL_ORDER.len() as i32, 2, 2, 2];
+        let buttons: i32 = groups.iter().sum();
+        let group_count = groups.len() as i32;
+        let main_width = |button, gap, separator, pad| {
+            buttons * button + (buttons - group_count) * gap + (group_count - 1) * separator + 2 * pad
+        };
+        // Shrink both bars together on narrow monitors so Confirm stays reachable.
+        let width_pt = main_width(BTN as i32, BTN_GAP as i32, SEP_W as i32, BAR_PAD as i32);
+        let fit = window_size.0 as f32 / (width_pt as f32 + GRIP_WIDTH + BTN_GAP + 2.0 * SCREEN_MARGIN);
+        let s = scale.max(0.5).min(fit);
+        // Round down so rounding repeated gaps never pushes the last button off-screen.
+        let px = |v: f32| (v * s).floor() as i32;
         let btn = px(BTN);
         let gap = px(BTN_GAP);
         let sep = px(SEP_W);
         let pad = px(BAR_PAD);
         let bar_h = btn + 2 * pad;
-
-        // ---- main bar width
-        let groups = [TOOL_ORDER.len() as i32, 2, 2, 2];
-        let mut main_w = 2 * pad;
-        for (i, &n) in groups.iter().enumerate() {
-            main_w += n * btn + (n - 1) * gap;
-            if i + 1 < groups.len() {
-                main_w += sep;
-            }
-        }
+        let grip_w = px(GRIP_WIDTH);
+        let main_w = main_width(btn, gap, sep, pad) + grip_w + gap;
         // ---- style bar width
         let cell = px(SUB_CELL);
         let cgap = px(SUB_CELL_GAP);
@@ -172,19 +176,23 @@ impl Toolbar {
         let (ww, wh) = (window_size.0 as i32, window_size.1 as i32);
         let margin = px(SCREEN_MARGIN);
         let edge = px(EDGE_GAP);
-        let mut x = selection.x + selection.w / 2 - main_w / 2;
-        x = x.min(ww - margin - main_w).max(margin);
+        let centered_x = selection.x + selection.w / 2 - main_w / 2;
         let below = selection.y + selection.h + edge;
-        let y = if below + total_h <= wh - margin {
+        let auto_y = if below + total_h <= wh - margin {
             below
         } else {
             let above = selection.y - edge - total_h;
             if above >= margin { above } else { (wh - total_h - margin).max(margin) }
         };
 
+        let (x, y) = origin.unwrap_or((centered_x, auto_y));
+        let x = x.clamp(margin, (ww - margin - total_w).max(margin));
+        let y = y.clamp(margin, (wh - margin - total_h).max(margin));
+
         // ---- main bar buttons
         let by = y + pad;
-        let mut cx = x + pad;
+        let grip = IconButton { origin: (x + pad, by), size: (grip_w, btn) };
+        let mut cx = x + pad + grip_w + gap;
         let mut main_seps = Vec::new();
         let mut tool_buttons = Vec::with_capacity(TOOL_ORDER.len());
         for (i, &t) in TOOL_ORDER.iter().enumerate() {
@@ -237,6 +245,7 @@ impl Toolbar {
             sub: ((sx, sy), (sub_w, sub_h)),
             main_seps,
             sub_sep,
+            grip,
             tool_buttons,
             undo_button,
             redo_button,
@@ -251,6 +260,9 @@ impl Toolbar {
     }
 
     pub fn hit_with_tool(&self, cursor: (i32, i32), active_tool: Tool) -> ToolbarHit {
+        if point_in(cursor, self.grip.origin, self.grip.size) {
+            return ToolbarHit::Grip;
+        }
         for btn in &self.tool_buttons {
             if point_in(cursor, btn.origin, btn.size) {
                 return ToolbarHit::Tool(btn.tool);
@@ -328,7 +340,7 @@ pub fn draw_toolbar(
     }
 
     // ---- separators
-    let sep_h = 18.0 * s;
+    let sep_h = ICON_PT * s;
     let (my, mh) = (toolbar.main.0 .1 as f32, toolbar.main.1 .1 as f32);
     for &x in &toolbar.main_seps {
         c.fill_rrect(x as f32 - 0.5 * s, my + (mh - sep_h) / 2.0, s.max(1.0), sep_h, 0.0, SEP_COLOR, 0.12);
@@ -337,6 +349,17 @@ pub fn draw_toolbar(
         let (sy, sh) = (toolbar.sub.0 .1 as f32, toolbar.sub.1 .1 as f32);
         let h = 16.0 * s;
         c.fill_rrect(toolbar.sub_sep as f32 - 0.5 * s, sy + (sh - h) / 2.0, s.max(1.0), h, 0.0, SEP_COLOR, 0.12);
+    }
+
+    let grip = &toolbar.grip;
+    if hover == ToolbarHit::Grip {
+        c.button_bg(grip.origin, grip.size, s, ICON, 0.10);
+    }
+    let (cx, cy) = snap_center(grip.origin, grip.size);
+    for dx in [-2.6, 2.6] {
+        for dy in [-6.0, 0.0, 6.0] {
+            c.disk(cx + dx * s, cy + dy * s, 1.6 * s, ICON, 0.8);
+        }
     }
 
     // ---- tool buttons
@@ -384,7 +407,7 @@ pub fn draw_toolbar(
             ICON
         };
         let (ox, oy) = (b.origin.0 as f32, b.origin.1 as f32);
-        let k = b.size.0 as f32 / BTN;
+        let k = b.size.0 as f32 / 32.0; // glyph coordinates use a 32-unit grid
         let t = 2.0 * s;
         c.line(ox + 11.0 * k, oy + 11.0 * k, ox + 21.0 * k, oy + 21.0 * k, t, color);
         c.line(ox + 21.0 * k, oy + 11.0 * k, ox + 11.0 * k, oy + 21.0 * k, t, color);
@@ -395,7 +418,7 @@ pub fn draw_toolbar(
         let bg = if hover == ToolbarHit::Confirm { ACCENT_HOVER } else { THEME_COLOR };
         c.button_bg(b.origin, b.size, s, bg, 1.0);
         let (ox, oy) = (b.origin.0 as f32, b.origin.1 as f32);
-        let k = b.size.0 as f32 / BTN;
+        let k = b.size.0 as f32 / 32.0; // glyph coordinates use a 32-unit grid
         let t = 2.4 * s;
         c.line(ox + 10.0 * k, oy + 16.5 * k, ox + 14.2 * k, oy + 20.7 * k, t, 0xFFFFFF);
         c.line(ox + 14.2 * k, oy + 20.7 * k, ox + 22.0 * k, oy + 12.0 * k, t, 0xFFFFFF);
@@ -617,7 +640,7 @@ impl Canvas<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, width: f32, color: u32) {
+    pub(crate) fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, width: f32, color: u32) {
         let hw = width / 2.0;
         let (dx, dy) = (x1 - x0, y1 - y0);
         let len2 = (dx * dx + dy * dy).max(1e-6);
@@ -661,7 +684,7 @@ mod tests {
 
     #[test]
     fn layout_below_default() {
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         assert!(t.origin.1 > sel().y + sel().h);
         assert_eq!(t.tool_buttons.len(), 7);
         assert_eq!(t.tool_buttons[0].tool, Tool::Move);
@@ -671,13 +694,13 @@ mod tests {
     #[test]
     fn layout_flips_above_when_low() {
         let s = Rect { x: 100, y: 800, w: 300, h: 90 };
-        let t = Toolbar::layout(s, (1440, 900), 1.0);
+        let t = Toolbar::layout(s, (1440, 900), 1.0, None);
         assert!(t.origin.1 < s.y);
     }
 
     #[test]
     fn hit_tool_button() {
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         let btn = &t.tool_buttons[1];
         let c = (btn.origin.0 + 5, btn.origin.1 + 5);
         assert_eq!(t.hit_with_tool(c, Tool::Move), ToolbarHit::Tool(Tool::Arrow));
@@ -685,7 +708,7 @@ mod tests {
 
     #[test]
     fn hit_undo() {
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         let u = &t.undo_button;
         let c = (u.origin.0 + 3, u.origin.1 + 3);
         assert_eq!(t.hit_with_tool(c, Tool::Move), ToolbarHit::Undo);
@@ -693,13 +716,13 @@ mod tests {
 
     #[test]
     fn hit_none_outside() {
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         assert_eq!(t.hit_with_tool((10, 10), Tool::Move), ToolbarHit::None);
     }
 
     #[test]
     fn contains_inside_bar() {
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         let c = (t.origin.0 + t.size.0 / 2, t.origin.1 + t.size.1 / 2);
         assert!(t.contains(c, Tool::Arrow));
         assert!(!t.contains((10, 10), Tool::Arrow));
@@ -707,7 +730,7 @@ mod tests {
 
     #[test]
     fn tool_order_includes_pen_and_text() {
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         let tools: Vec<Tool> = t.tool_buttons.iter().map(|b| b.tool).collect();
         assert_eq!(tools, vec![
             Tool::Move, Tool::Arrow, Tool::Rect, Tool::Ellipse,
@@ -717,7 +740,7 @@ mod tests {
 
     #[test]
     fn layout_has_color_and_stroke_buttons() {
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         assert_eq!(t.color_buttons.len(), 4);
         assert_eq!(t.stroke_buttons.len(), 3);
         // Row 2 sits below row 1.
@@ -728,7 +751,7 @@ mod tests {
 
     #[test]
     fn style_bar_hidden_for_move_tool() {
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         let red = &t.color_buttons[0];
         let c = (red.origin.0 + 4, red.origin.1 + 4);
         assert_eq!(t.hit_with_tool(c, Tool::Move), ToolbarHit::None);
@@ -738,7 +761,7 @@ mod tests {
 
     #[test]
     fn cancel_and_confirm_are_last() {
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         assert!(t.cancel_button.origin.0 > t.save_button.origin.0);
         assert!(t.confirm_button.origin.0 > t.cancel_button.origin.0);
         let c = (t.confirm_button.origin.0 + 3, t.confirm_button.origin.1 + 3);
@@ -748,16 +771,49 @@ mod tests {
     }
 
     #[test]
+    fn larger_buttons_stay_clickable_at_screen_edges() {
+        let edge = Rect { x: 710, y: 500, w: 8, h: 8 };
+        for (window, scale) in [((1440, 900), 1.0), ((720, 520), 1.5), ((720, 520), 2.0)] {
+            let t = Toolbar::layout(edge, window, scale, None);
+            if scale == 1.0 {
+                assert_eq!(t.confirm_button.size, (40, 40));
+                assert_eq!(t.color_buttons[0].size, (30, 30));
+            }
+            let b = &t.confirm_button;
+            let corner = (b.origin.0 + b.size.0 - 1, b.origin.1 + b.size.1 - 1);
+            assert!(corner.0 < window.0 as i32 && corner.1 < window.1 as i32);
+            assert_eq!(t.hit_with_tool(corner, Tool::Arrow), ToolbarHit::Confirm);
+            assert!(t.sub.0.1 + t.sub.1.1 <= window.1 as i32);
+        }
+    }
+
+    #[test]
+    fn dragging_the_grip_moves_both_bars_and_clamps_the_group() {
+        let window = (900, 600);
+        let auto = Toolbar::layout(sel(), window, 1.0, None);
+        let moved = Toolbar::layout(sel(), window, 1.0, Some((28, 31)));
+        assert_eq!(moved.origin, (28, 31));
+        assert_eq!(moved.sub.0.0 - auto.sub.0.0, moved.origin.0 - auto.origin.0);
+        assert_eq!(moved.sub.0.1 - auto.sub.0.1, moved.origin.1 - auto.origin.1);
+        let g = &moved.grip;
+        assert_eq!(moved.hit_with_tool((g.origin.0 + 1, g.origin.1 + 1), Tool::Rect), ToolbarHit::Grip);
+        let b = &moved.confirm_button;
+        assert_eq!(moved.hit_with_tool(b.origin, Tool::Rect), ToolbarHit::Confirm);
+        let edge = Toolbar::layout(sel(), window, 1.0, Some((950, 720)));
+        assert!(edge.main.0.0 + edge.main.1.0 <= 900 && edge.sub.0.1 + edge.sub.1.1 <= 600);
+    }
+
+    #[test]
     fn layout_scales_with_display() {
-        let a = Toolbar::layout(sel(), (4000, 3000), 1.0);
-        let b = Toolbar::layout(sel(), (4000, 3000), 2.0);
+        let a = Toolbar::layout(sel(), (4000, 3000), 1.0, None);
+        let b = Toolbar::layout(sel(), (4000, 3000), 2.0, None);
         assert!((b.main.1 .0 - 2 * a.main.1 .0).abs() <= 6);
         assert!((b.main.1 .1 - 2 * a.main.1 .1).abs() <= 2);
     }
 
     #[test]
     fn hit_returns_color_and_stroke() {
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         let yellow = &t.color_buttons[1];
         let c = (yellow.origin.0 + 4, yellow.origin.1 + 4);
         assert_eq!(t.hit_with_tool(c, Tool::Arrow), ToolbarHit::Color(Color::Yellow));
@@ -768,7 +824,7 @@ mod tests {
 
     #[test]
     fn hit_row2_color_returns_none_when_mosaic_active() {
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         let yellow = &t.color_buttons[1];
         let c = (yellow.origin.0 + 4, yellow.origin.1 + 4);
         assert_eq!(t.hit_with_tool(c, Tool::Mosaic), ToolbarHit::None);
@@ -777,7 +833,7 @@ mod tests {
     #[test]
     fn hit_stroke_under_mosaic_returns_stroke() {
         // Stroke section is interactive under Mosaic (controls block size).
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         let thick = &t.stroke_buttons[2];
         let s = (thick.origin.0 + 4, thick.origin.1 + 4);
         assert_eq!(t.hit_with_tool(s, Tool::Mosaic), ToolbarHit::Stroke(Stroke::Thick));
@@ -785,7 +841,7 @@ mod tests {
 
     #[test]
     fn toolbar_has_pin_button() {
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         // Pin button sits to the right of redo.
         assert!(t.pin_button.origin.0 > t.redo_button.origin.0);
         // Same vertical center as the rest of row 1.
@@ -796,7 +852,7 @@ mod tests {
 
     #[test]
     fn hit_pin_button() {
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         let p = &t.pin_button;
         let c = (p.origin.0 + 5, p.origin.1 + 5);
         assert_eq!(t.hit_with_tool(c, Tool::Move), ToolbarHit::Pin);
@@ -805,7 +861,7 @@ mod tests {
     #[test]
     fn hit_pin_button_works_under_mosaic() {
         // Row 2 is greyed under Mosaic, but row 1 (incl. pin) stays clickable.
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         let p = &t.pin_button;
         let c = (p.origin.0 + 5, p.origin.1 + 5);
         assert_eq!(t.hit_with_tool(c, Tool::Mosaic), ToolbarHit::Pin);
@@ -813,7 +869,7 @@ mod tests {
 
     #[test]
     fn toolbar_has_save_button() {
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         // Save sits to the right of pin on row 1.
         assert!(t.save_button.origin.0 > t.pin_button.origin.0);
         assert_eq!(t.save_button.origin.1, t.pin_button.origin.1);
@@ -822,7 +878,7 @@ mod tests {
 
     #[test]
     fn hit_save_button() {
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         let s = &t.save_button;
         let c = (s.origin.0 + 5, s.origin.1 + 5);
         assert_eq!(t.hit_with_tool(c, Tool::Move), ToolbarHit::Save);
@@ -831,7 +887,7 @@ mod tests {
     #[test]
     fn hit_save_button_works_under_mosaic() {
         // Save (row 1) stays clickable even under Mosaic.
-        let t = Toolbar::layout(sel(), (1440, 900), 1.0);
+        let t = Toolbar::layout(sel(), (1440, 900), 1.0, None);
         let s = &t.save_button;
         let c = (s.origin.0 + 5, s.origin.1 + 5);
         assert_eq!(t.hit_with_tool(c, Tool::Mosaic), ToolbarHit::Save);

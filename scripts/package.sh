@@ -14,7 +14,10 @@
 set -euo pipefail
 
 # --- config ----------------------------------------------------------------
+# Preserve the capture app's shipping identity and its Screen Recording grant.
 BUNDLE_ID="${BUNDLE_ID:-com.QuickShot.app}"
+# A local install may already have a grant tied to another code signing identifier.
+SIGNING_IDENTIFIER="${SIGNING_IDENTIFIER:-$BUNDLE_ID}"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 
 # --- derive version from Cargo.toml ---------------------------------------
@@ -88,19 +91,34 @@ sed -e "s/{{VERSION}}/$VERSION/g" -e "s|{{BUNDLE_ID}}|$BUNDLE_ID|g" \
     scripts/Info.plist.in > "$APP/Contents/Info.plist"
 plutil -lint "$APP/Contents/Info.plist"
 
+# usernoted lowercases click destinations. Keep notifications in their own
+# lowercase bundle so their callbacks work without migrating capture permissions.
+HELPER="$APP/Contents/Helpers/QuickShot Notifications.app"
+HELPER_ID=$(printf '%s.notifications' "$BUNDLE_ID" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+mkdir -p "$HELPER/Contents/MacOS" "$HELPER/Contents/Resources"
+cp "$APP/Contents/Resources/QuickShot.icns" "$HELPER/Contents/Resources/"
+cp "$APP/Contents/Info.plist" "$HELPER/Contents/Info.plist"
+plutil -replace CFBundleIdentifier -string "$HELPER_ID" "$HELPER/Contents/Info.plist"
+plutil -replace CFBundleExecutable -string QuickShotNotifications "$HELPER/Contents/Info.plist"
+plutil -remove NSScreenCaptureUsageDescription "$HELPER/Contents/Info.plist"
+xcrun clang -arch arm64 -arch x86_64 -mmacosx-version-min=11.0 -Os -fobjc-arc \
+    -framework AppKit -framework UserNotifications src/macos_notifications.m \
+    -o "$HELPER/Contents/MacOS/QuickShotNotifications"
 # --- codesign --------------------------------------------------------------
 # Default (SIGN_IDENTITY="-") is ad-hoc: unchanged behavior, no secrets needed.
 # A real identity (passed via env, e.g. from the CI ephemeral keychain) enables
 # hardened runtime + entitlements and signs the inner binary before the bundle.
 if [ "$SIGN_IDENTITY" = "-" ]; then
     echo "==> codesigning ad-hoc"
-    codesign --force --deep --sign "-" "$APP"
+    codesign --force --sign "-" "$HELPER"
+    codesign --force --identifier "$SIGNING_IDENTIFIER" --sign "-" "$APP"
 else
     echo "==> codesigning with real identity (value hidden)"
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$HELPER"
     ENTITLEMENTS="scripts/entitlements.mac.plist"
-    codesign --force --options runtime --entitlements "$ENTITLEMENTS" \
+    codesign --force --identifier "$SIGNING_IDENTIFIER" --options runtime --entitlements "$ENTITLEMENTS" \
         --timestamp --sign "$SIGN_IDENTITY" "$APP/Contents/MacOS/QuickShot"
-    codesign --force --options runtime --entitlements "$ENTITLEMENTS" \
+    codesign --force --identifier "$SIGNING_IDENTIFIER" --options runtime --entitlements "$ENTITLEMENTS" \
         --timestamp --sign "$SIGN_IDENTITY" "$APP"
 fi
 codesign --verify --verbose=2 "$APP"

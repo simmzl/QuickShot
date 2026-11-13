@@ -2,11 +2,11 @@
 //! `~/.config/QuickShot/config.toml` at startup. Never panics on bad input;
 //! failed fields fall back to defaults with a stderr warning.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use global_hotkey::hotkey::{Code, Modifiers};
 use serde::Deserialize;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -26,6 +26,16 @@ pub struct ParsedHotkey {
     pub modifiers: Modifiers,
     pub code: Code,
     pub raw: String,
+    fallback_for: Option<String>,
+}
+
+impl ParsedHotkey {
+    pub fn menu_label(&self) -> String {
+        match &self.fallback_for {
+            Some(key) => format!("{} (fallback for {})", self.raw, key),
+            None => self.raw.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -37,7 +47,24 @@ pub struct SaveConfig {
 
 #[derive(Debug, Clone)]
 pub struct GeneralConfig {
-    pub notification_on_fullscreen: bool,
+    pub fullscreen_feedback: FullscreenFeedback,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FullscreenFeedback {
+    FlashAndNotification,
+    Flash,
+    Off,
+}
+
+impl FullscreenFeedback {
+    pub fn flashes(self) -> bool {
+        matches!(self, Self::FlashAndNotification | Self::Flash)
+    }
+
+    pub fn notifies(self) -> bool {
+        self == Self::FlashAndNotification
+    }
 }
 
 impl Config {
@@ -63,20 +90,20 @@ impl Config {
             }
             return Config::defaults();
         }
-        let source = match fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("config: failed to read {path:?}: {e}; using defaults");
-                return Config::defaults();
-            }
-        };
-        match Self::parse(&source) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("config: parse error in {path:?}: {e}; using defaults");
-                Config::defaults()
-            }
-        }
+        Self::read_from(&path).unwrap_or_else(|error| {
+            eprintln!("config: {error:#}; using defaults");
+            Config::defaults()
+        })
+    }
+
+    pub fn read_existing() -> Result<Config> {
+        let path = config_path().context("could not resolve config directory")?;
+        Self::read_from(&path)
+    }
+
+    fn read_from(path: &Path) -> Result<Config> {
+        let source = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        Self::parse(&source).with_context(|| format!("parse {}", path.display()))
     }
 
     pub fn defaults() -> Config {
@@ -87,32 +114,48 @@ impl Config {
             },
             save: SaveConfig {
                 enabled: false,
-                directory: expand_home("~/Desktop"),
-                filename_template: "Screenshot_{datetime}.png".to_string(),
+                directory: expand_home(if cfg!(windows) { "~/Pictures" } else { "~/Desktop" }),
+                filename_template: "QuickShot_{datetime}.png".to_string(),
             },
             general: GeneralConfig {
-                notification_on_fullscreen: true,
+                fullscreen_feedback: FullscreenFeedback::FlashAndNotification,
             },
         }
     }
 
     pub fn parse(source: &str) -> Result<Config> {
+        #[cfg(windows)]
+        let raw = parse_windows_config(source)?;
+        #[cfg(not(windows))]
         let raw: RawConfig = toml::from_str(source)?;
         let mut cfg = Config::defaults();
 
         if let Some(h) = raw.hotkey {
-            if let Some(s) = h.region.as_deref() {
-                match parse_hotkey_string(s) {
-                    Ok(p) => cfg.hotkey.region = p,
-                    Err(e) => eprintln!("config: hotkey.region {s:?} invalid: {e}; using default"),
+            for (configured, binding) in [
+                (h.region, &mut cfg.hotkey.region),
+                (h.fullscreen, &mut cfg.hotkey.fullscreen),
+            ] {
+                if let Some(key) = configured {
+                    match parse_hotkey_string(&key) {
+                        Ok(parsed) => *binding = parsed,
+                        Err(error) => {
+                            eprintln!("config: invalid shortcut {key:?}: {error}; using {}", binding.raw);
+                            binding.fallback_for = Some(key);
+                        }
+                    }
                 }
             }
-            if let Some(s) = h.fullscreen.as_deref() {
-                match parse_hotkey_string(s) {
-                    Ok(p) => cfg.hotkey.fullscreen = p,
-                    Err(e) => {
-                        eprintln!("config: hotkey.fullscreen {s:?} invalid: {e}; using default");
-                    }
+            if cfg.hotkey.region.code == cfg.hotkey.fullscreen.code
+                && cfg.hotkey.region.modifiers == cfg.hotkey.fullscreen.modifiers
+            {
+                eprintln!("config: both actions use the same shortcut; using default shortcuts");
+                for (binding, mut default) in [
+                    (&mut cfg.hotkey.region, default_region_hotkey()),
+                    (&mut cfg.hotkey.fullscreen, default_fullscreen_hotkey()),
+                ] {
+                    default.fallback_for = binding.fallback_for.take()
+                        .or_else(|| (binding.raw != default.raw).then(|| binding.raw.clone()));
+                    *binding = default;
                 }
             }
         }
@@ -120,20 +163,64 @@ impl Config {
             if let Some(v) = s.enabled {
                 cfg.save.enabled = v;
             }
-            if let Some(d) = s.directory.as_deref() {
-                cfg.save.directory = expand_home(d);
+            if let Some(d) = s.directory {
+                cfg.save.directory = expand_home(d.get_ref());
             }
-            if let Some(t) = s.filename_template {
+            // Older generated configs explicitly contained the old default.
+            if let Some(t) = s.filename_template.filter(|t| t != "Screenshot_{datetime}.png") {
                 cfg.save.filename_template = t;
             }
         }
         if let Some(g) = raw.general {
-            if let Some(v) = g.notification_on_fullscreen {
-                cfg.general.notification_on_fullscreen = v;
+            if g.notification_on_fullscreen == Some(false) {
+                cfg.general.fullscreen_feedback = FullscreenFeedback::Flash;
+            }
+            if let Some(mode) = g.fullscreen_feedback {
+                match mode.as_str() {
+                    "notification" => cfg.general.fullscreen_feedback = FullscreenFeedback::FlashAndNotification,
+                    "flash" => cfg.general.fullscreen_feedback = FullscreenFeedback::Flash,
+                    "off" => cfg.general.fullscreen_feedback = FullscreenFeedback::Off,
+                    _ => eprintln!("config: unknown fullscreen_feedback {mode:?}; using fallback"),
+                }
             }
         }
         Ok(cfg)
     }
+}
+
+// Explorer paths may contain invalid TOML escapes or valid ones such as \t.
+// Let TOML identify the field by its source span so comments, other strings,
+// and unrelated syntax errors keep their ordinary TOML semantics.
+#[cfg(any(windows, test))]
+fn parse_windows_config(source: &str) -> Result<RawConfig> {
+    for (start, _) in source.match_indices('"') {
+        let rest = &source[start + 1..];
+        let bytes = rest.as_bytes();
+        let drive = matches!(bytes, [letter, b':', b'\\', ..] if letter.is_ascii_alphabetic());
+        let home = rest.starts_with(r"~\") || rest.starts_with(r"～\");
+        let unc = rest.starts_with(r"\\");
+        if !(drive || home || unc) {
+            continue;
+        }
+        // Already escaped roots (F:\\ or \\\\server) use standard TOML decoding.
+        let after_root = if drive { &rest[2..] } else { rest.trim_start_matches(['~', '～']) };
+        if (unc && after_root.starts_with(r"\\\\")) || (!unc && after_root.starts_with(r"\\")) {
+            continue;
+        }
+        let Some(end) = rest.find(['"', '\n', '\r']) else { continue };
+        if rest.as_bytes()[end] != b'"' { continue; }
+        let mut candidate = source.to_owned();
+        candidate.replace_range(start + 1..start + 1 + end, "");
+        if let Ok(mut raw) = toml::from_str::<RawConfig>(&candidate) {
+            if let Some(dir) = raw.save.as_mut().and_then(|save| save.directory.as_mut()) {
+                if dir.span() == (start..start + 2) {
+                    *dir.get_mut() = rest[..end].to_owned();
+                    return Ok(raw);
+                }
+            }
+        }
+    }
+    Ok(toml::from_str(source)?)
 }
 
 #[derive(Deserialize, Default)]
@@ -152,23 +239,25 @@ struct RawHotkey {
 #[derive(Deserialize, Default)]
 struct RawSave {
     enabled: Option<bool>,
-    directory: Option<String>,
+    directory: Option<toml::Spanned<String>>,
     filename_template: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
 struct RawGeneral {
+    fullscreen_feedback: Option<String>,
     notification_on_fullscreen: Option<bool>,
 }
 
 #[cfg(not(target_os = "windows"))]
-pub const DEFAULT_TOML: &str = r#"# QuickShot config — edit and restart the daemon to apply changes.
+pub const DEFAULT_TOML: &str = r#"# QuickShot config — changes apply automatically.
 # Regenerate defaults by deleting this file and re-launching QuickShot.
 
 [hotkey]
 # Format: modifiers joined by "+", ending with a key. Modifiers (case-insensitive):
 #   Cmd (macOS) / Ctrl / Alt / Opt / Shift / Meta / Super
-# Keys: A-Z, 0-9, F1-F24, or named keys (Space, Enter, Tab, Backspace, Escape).
+# Function keys can be used alone, e.g. region = "F2".
+# Keys: A-Z, 0-9, F1-F20, or named keys (Space, Enter, Tab, Backspace, Escape).
 region = "Cmd+Shift+A"
 fullscreen = "Cmd+Shift+S"
 
@@ -183,22 +272,22 @@ directory = "~/Desktop"
 #   {datetime} 2026-04-19_15-04-30
 #   {w}, {h}   1920, 1080 (physical pixels)
 #   {mode}     region | fullscreen
-filename_template = "Screenshot_{datetime}.png"
+filename_template = "QuickShot_{datetime}.png"
 
 [general]
-# Show a system notification after a successful full-screen capture.
-# Region captures never show one (overlay dismissal is already feedback).
-notification_on_fullscreen = true
+# "notification" flashes and sends a notification, "flash" only flashes, "off" disables both.
+fullscreen_feedback = "notification"
 "#;
 
 #[cfg(target_os = "windows")]
-pub const DEFAULT_TOML: &str = r#"# QuickShot config — edit and restart the daemon to apply changes.
+pub const DEFAULT_TOML: &str = r#"# QuickShot config — changes apply automatically.
 # Regenerate defaults by deleting this file and re-launching QuickShot.
 
 [hotkey]
 # Format: modifiers joined by "+", ending with a key. Modifiers (case-insensitive):
 #   Ctrl / Alt / Shift / Meta / Super (Win key) / Cmd (alias for Meta)
-# Keys: A-Z, 0-9, F1-F24, or named keys (Space, Enter, Tab, Backspace, Escape).
+# Function keys can be used alone, e.g. region = "F2".
+# Keys: A-Z, 0-9, F1-F11 or F13-F24 (Windows reserves F12), or named keys (Space, Enter, Tab, Backspace, Escape).
 # Note: Win+Shift+S is reserved by Windows Snip & Sketch; avoid Super/Meta+Shift+S.
 region = "Ctrl+Shift+A"
 fullscreen = "Ctrl+Shift+S"
@@ -206,20 +295,20 @@ fullscreen = "Ctrl+Shift+S"
 [save]
 # When true, every successful capture also writes a PNG to `directory`.
 enabled = false
-# `~` is expanded to %USERPROFILE%. Missing directories are created.
-directory = "~/Pictures"
+# Set enabled = true to save PNGs. ~ and ～ expand to your user profile.
+# Paste an Explorer path using either kind of quote, e.g. directory = "F:\images".
+directory = '~/Pictures'
 # Available placeholders: {date}, {time}, {datetime}, {w}, {h}, {mode}
 #   {date}     2026-04-19
 #   {time}     15-04-30
 #   {datetime} 2026-04-19_15-04-30
 #   {w}, {h}   1920, 1080 (physical pixels)
 #   {mode}     region | fullscreen
-filename_template = "Screenshot_{datetime}.png"
+filename_template = "QuickShot_{datetime}.png"
 
 [general]
-# Show a system notification after a successful full-screen capture.
-# Region captures never show one (overlay dismissal is already feedback).
-notification_on_fullscreen = true
+# "notification" flashes and sends a notification, "flash" only flashes, "off" disables both.
+fullscreen_feedback = "notification"
 "#;
 
 pub fn config_path() -> Option<PathBuf> {
@@ -263,17 +352,14 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 pub fn expand_home(input: &str) -> PathBuf {
-    if let Some(rest) = input.strip_prefix("~/") {
-        if let Some(home) = home_dir() {
-            return home.join(rest);
-        }
+    let path = Path::new(input);
+    let relative = path.strip_prefix("~");
+    #[cfg(windows)]
+    let relative = relative.or_else(|_| path.strip_prefix("～"));
+    if let (Ok(rest), Some(home)) = (relative, home_dir()) {
+        return home.join(rest);
     }
-    if input == "~" {
-        if let Some(home) = home_dir() {
-            return home;
-        }
-    }
-    PathBuf::from(input)
+    path.to_owned()
 }
 
 pub fn parse_hotkey_string(input: &str) -> Result<ParsedHotkey> {
@@ -282,9 +368,6 @@ pub fn parse_hotkey_string(input: &str) -> Result<ParsedHotkey> {
         bail!("empty hotkey string");
     }
     let parts: Vec<&str> = trimmed.split('+').map(str::trim).collect();
-    if parts.len() < 2 {
-        bail!("hotkey must have at least one modifier and a key");
-    }
     let (key_str, modifier_strs) = parts.split_last().unwrap();
     let mut modifiers = Modifiers::empty();
     for m in modifier_strs {
@@ -294,14 +377,24 @@ pub fn parse_hotkey_string(input: &str) -> Result<ParsedHotkey> {
         }
         modifiers |= bit;
     }
-    if modifiers.is_empty() {
-        bail!("at least one modifier required");
-    }
     let code = parse_code(key_str).ok_or_else(|| anyhow!("unknown key: {key_str}"))?;
+    #[cfg(windows)]
+    if code == Code::F12 {
+        bail!("Windows reserves F12 for the debugger");
+    }
+    #[cfg(target_os = "macos")]
+    if matches!(code, Code::F21 | Code::F22 | Code::F23 | Code::F24) {
+        bail!("macOS hotkeys support function keys F1 through F20");
+    }
+    // parse_code recognizes F1–F24 and the ordinary letter F.
+    if modifiers.is_empty() && !(key_str.len() > 1 && key_str.starts_with(['F', 'f'])) {
+        bail!("only function keys can be used without a modifier");
+    }
     Ok(ParsedHotkey {
         modifiers,
         code,
         raw: trimmed.to_string(),
+        fallback_for: None,
     })
 }
 
@@ -480,6 +573,65 @@ mod tests {
     }
 
     #[test]
+    fn parse_standalone_function_keys() {
+        for key in ["F1", "f2", "F20"] {
+            assert!(parse_hotkey_string(key).unwrap().modifiers.is_empty());
+        }
+        for key in ["F", "F25", "2", "Space", "Ctrl"] {
+            assert!(parse_hotkey_string(key).is_err());
+        }
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn unavailable_function_keys_fall_back_without_losing_other_settings() {
+        #[cfg(windows)]
+        let unavailable = ["F12", "Ctrl+F12"];
+        #[cfg(not(windows))]
+        let unavailable = ["F21", "Cmd+F24"];
+        for key in unavailable {
+            let source = format!("[hotkey]\nregion = '{key}'\nfullscreen = 'F2'\n[save]\nenabled = true");
+            let cfg = Config::parse(&source).unwrap();
+            assert_eq!(cfg.hotkey.region.raw, default_region_hotkey().raw);
+            assert!(cfg.hotkey.region.menu_label().contains(key));
+            assert_eq!(cfg.hotkey.fullscreen.raw, "F2");
+            assert!(cfg.save.enabled);
+        }
+        #[cfg(windows)]
+        assert!(parse_hotkey_string("F24").is_ok());
+    }
+
+    #[test]
+    fn fallback_cannot_leave_both_actions_on_the_same_key() {
+        let region = default_region_hotkey().raw;
+        let cfg = Config::parse(&format!("[hotkey]\nregion = 'invalid'\nfullscreen = '{region}'")).unwrap();
+        assert_eq!(cfg.hotkey.region.raw, region);
+        assert_eq!(cfg.hotkey.fullscreen.raw, default_fullscreen_hotkey().raw);
+    }
+
+    #[test]
+    fn fullscreen_feedback_for_existing_and_new_configs() {
+        for (source, flash, notify) in [
+            ("", true, true),
+            (DEFAULT_TOML, true, true),
+            ("[general]\nnotification_on_fullscreen = true", true, true),
+            ("[general]\nnotification_on_fullscreen = false", true, false),
+            ("[general]\nfullscreen_feedback = 'notification'", true, true),
+            ("[general]\nfullscreen_feedback = 'flash'", true, false),
+            ("[general]\nfullscreen_feedback = 'off'", false, false),
+        ] {
+            let mode = Config::parse(source).unwrap().general.fullscreen_feedback;
+            assert_eq!((mode.flashes(), mode.notifies()), (flash, notify), "{source}");
+        }
+    }
+
+    #[test]
+    fn feedback_overrides_legacy_setting() {
+        let config = Config::parse("[general]\nnotification_on_fullscreen = false\nfullscreen_feedback = 'flash'").unwrap();
+        assert_eq!(config.general.fullscreen_feedback, FullscreenFeedback::Flash);
+    }
+
+    #[test]
     fn parse_missing_modifier_errors() {
         assert!(parse_hotkey_string("A").is_err());
     }
@@ -499,24 +651,64 @@ mod tests {
         assert!(parse_hotkey_string("Cmd+Banana").is_err());
     }
 
-    #[cfg(not(target_os = "windows"))]
     #[test]
-    fn expand_home_basic() {
-        unsafe { std::env::set_var("HOME", "/Users/tester") };
-        assert_eq!(expand_home("~/Desktop"), PathBuf::from("/Users/tester/Desktop"));
-        assert_eq!(expand_home("~"), PathBuf::from("/Users/tester"));
-        assert_eq!(expand_home("/absolute/path"), PathBuf::from("/absolute/path"));
-        assert_eq!(expand_home("relative/path"), PathBuf::from("relative/path"));
+    fn save_directory_accepts_literal_windows_paths() {
+        for (value, expected) in [
+            (r"'F:\images'", r"F:\images"),
+            (r#""F:/images""#, "F:/images"),
+            (r#""F:\\images""#, r"F:\images"),
+            (r"'\\server\share\截图'", r"\\server\share\截图"),
+        ] {
+            let cfg = Config::parse(&format!("[save]\nenabled = true\ndirectory = {value}")).unwrap();
+            assert!(cfg.save.enabled);
+            assert_eq!(cfg.save.directory, Path::new(expected));
+        }
+
     }
 
-    #[cfg(target_os = "windows")]
+    #[test]
+    fn explorer_paths_are_literal_only_in_the_save_directory() {
+        for (value, expected) in [
+            (r#""F:\images""#, r"F:\images"),
+            (r#""F:\temp\new\测试's #1\""#, r"F:\temp\new\测试's #1\"),
+            (r#""F:\""#, r"F:\"),
+            (r#""\\server\share\new""#, r"\\server\share\new"),
+            (r#""\\\\server\\share\\old""#, r"\\server\share\old"),
+            (r#""F:\\images""#, r"F:\images"),
+            (r"'F:\images'", r"F:\images"),
+            (r#""～\截图""#, r"～\截图"),
+        ] {
+            let source = format!("# ignored: \"C:\\another\"\r\n[save]\r\n  directory = {value} # path\r\nenabled = true");
+            let save = parse_windows_config(&source).unwrap().save.unwrap();
+            assert_eq!(save.directory.unwrap().get_ref(), expected);
+            assert_eq!(save.enabled, Some(true));
+        }
+        assert!(parse_windows_config(r#"[save]
+filename_template = "F:\images""#).is_err());
+        assert!(parse_windows_config(r#"[save]
+directory = "F:\images"
+enabled = invalid"#).is_err());
+    }
+
+    #[test]
+    fn generated_legacy_filename_uses_the_new_default() {
+        let cfg = Config::parse("[save]\nfilename_template = 'Screenshot_{datetime}.png'").unwrap();
+        assert_eq!(cfg.save.filename_template, Config::defaults().save.filename_template);
+        assert_eq!(Config::parse(DEFAULT_TOML).unwrap().save.filename_template, cfg.save.filename_template);
+    }
+
     #[test]
     fn expand_home_basic() {
-        unsafe { std::env::set_var("USERPROFILE", r"C:\Users\tester") };
-        assert_eq!(expand_home("~/Desktop"), PathBuf::from(r"C:\Users\tester\Desktop"));
-        assert_eq!(expand_home("~"), PathBuf::from(r"C:\Users\tester"));
-        assert_eq!(expand_home(r"C:\absolute\path"), PathBuf::from(r"C:\absolute\path"));
-        assert_eq!(expand_home("relative/path"), PathBuf::from("relative/path"));
+        let home = home_dir().unwrap();
+        assert_eq!(expand_home("~/Desktop"), home.join("Desktop"));
+        assert_eq!(expand_home("~"), home);
+        assert_eq!(expand_home("relative/path"), Path::new("relative/path"));
+        assert_eq!(expand_home("~other/path"), Path::new("~other/path"));
+        #[cfg(windows)]
+        for input in [r"~\Pictures", r"～\Pictures", "～/Pictures"] {
+            let cfg = Config::parse(&format!("[save]\ndirectory = '{input}'")).unwrap();
+            assert_eq!(cfg.save.directory, home.join("Pictures"));
+        }
     }
 
     #[test]
@@ -527,8 +719,8 @@ mod tests {
         assert_eq!(c.hotkey.region.raw, expected_region);
         assert_eq!(c.hotkey.fullscreen.raw, expected_full);
         assert!(!c.save.enabled);
-        assert_eq!(c.save.filename_template, "Screenshot_{datetime}.png");
-        assert!(c.general.notification_on_fullscreen);
+        assert_eq!(c.save.filename_template, "QuickShot_{datetime}.png");
+        assert_eq!(c.general.fullscreen_feedback, FullscreenFeedback::FlashAndNotification);
     }
 
     #[test]
@@ -549,7 +741,7 @@ mod tests {
         assert_eq!(c.hotkey.region.code, Code::KeyR);
         assert!(c.save.enabled);
         assert_eq!(c.save.directory, PathBuf::from("/tmp/shots"));
-        assert!(!c.general.notification_on_fullscreen);
+        assert_eq!(c.general.fullscreen_feedback, FullscreenFeedback::Flash);
     }
 
     #[test]
@@ -562,7 +754,7 @@ mod tests {
         assert!(c.save.enabled);
         let expected_region = format!("{DEFAULT_PRIMARY_MODIFIER}+Shift+A");
         assert_eq!(c.hotkey.region.raw, expected_region);
-        assert_eq!(c.save.filename_template, "Screenshot_{datetime}.png");
+        assert_eq!(c.save.filename_template, "QuickShot_{datetime}.png");
     }
 
     #[test]

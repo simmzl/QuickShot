@@ -1,5 +1,6 @@
 # QuickShot Windows packaging script — produces
-# dist\QuickShot-<VERSION>-windows-x64.zip (contains QuickShot.exe + README.md).
+# a portable ZIP and a per-user Setup.exe from the same release binary.
+# Requires NSIS 3 (makensis.exe).
 #
 # Requirements when running locally:
 #   - PowerShell 5+ / pwsh
@@ -23,6 +24,10 @@ Write-Host "==> version $version"
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     throw "package.ps1: cargo not found on PATH"
 }
+
+$nsis = (Get-Command makensis.exe -ErrorAction SilentlyContinue).Source
+if (-not $nsis) { $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe" }
+if (-not (Test-Path $nsis)) { throw "Install NSIS 3 to build the Windows setup package." }
 
 # --- build ---------------------------------------------------------------
 Write-Host "==> cargo build --release"
@@ -49,6 +54,13 @@ Copy-Item "README.md" "$staging\"
 $zip = "dist\QuickShot-$version-windows-x64.zip"
 Compress-Archive -Path "$staging\*" -DestinationPath $zip -Force
 
+$installer = Join-Path (Resolve-Path "dist") "QuickShot-$version-windows-x64-Setup.exe"
+$payload = (Resolve-Path $exePath).Path
+& $nsis "/DVERSION=$version" "/DPAYLOAD=$payload" "/DOUTPUT=$installer" "scripts/installer.nsi"
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $installer)) {
+    throw "package.ps1: installer build failed"
+}
+
 # --- report --------------------------------------------------------------
 Write-Host ""
 Write-Host "done:"
@@ -56,3 +68,4 @@ Write-Host "  $staging\QuickShot.exe"
 $zipItem = Get-Item $zip
 $sizeKb = [Math]::Round($zipItem.Length / 1KB, 1)
 Write-Host "  $zip  ($sizeKb KB)"
+Write-Host "  $installer"

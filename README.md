@@ -6,7 +6,7 @@
 
 <p align="center">
   A tiny, instant screenshot tool for macOS and Windows.<br>
-  Press <code>⌘⇧A</code>, select, annotate, done. A native app of about 2 MB.
+  Press <code>⌘⇧A</code> on macOS or <code>Ctrl+Shift+A</code> on Windows to select and annotate a region.
 </p>
 
 <p align="center">
@@ -31,15 +31,15 @@
 
 ## Features
 
-- **Instant.** The overlay appears in well under a fifth of a second, even on a 6K display. The window, fonts and capture pipeline are warmed up at launch and reused, and frames go to the screen zero-copy, so drawing keeps up with the cursor.
-- **Select it your way.** Drag a region, or (on macOS) hover a window and click to snap to it. Resize from the edges and corners; a live `W × H` label shows the exact pixel size.
+- **Instant.** The overlay appears in well under a fifth of a second, even on a 6K display. The window, fonts and capture pipeline are warmed up at launch and reused, and on macOS frames go to the screen zero-copy, so drawing keeps up with the cursor.
+- **Select it your way.** Drag a region, or hover and click to select the highlighted window. On Windows, you can also snap to controls inside a window. Resize from the edges and corners; a live `W × H` label shows the exact pixel size.
 - **Annotate.** Arrow, rectangle, ellipse, pen, text and mosaic, in four colors and three sizes. Move any annotation afterwards; undo and redo freely.
 - **Real text input.** The text tool is a native text field: IME (Chinese, Japanese…), emoji, selection, and `⌘C` / `⌘V` / `⌘X` / `⌘A` / `⌘Z` all just work. What you type is exactly what gets exported.
 - **Pixel-perfect magnifier.** While choosing a region, a loupe shows the zoomed pixel grid, the color under the cursor as HEX and RGB, and its coordinates. Press `C` to copy the HEX value.
 - **Finish fast.** `↩` or double-click copies to the clipboard. Or **pin** the shot as a floating always-on-top window, or **save** it as PNG.
-- **Full-screen capture** with a second hotkey, straight to the clipboard.
+- **Full-screen capture.** Capture the display under the pointer to the clipboard. By default, the display flashes briefly and a notification appears. When auto-save succeeds, click the notification to select the PNG in Finder or File Explorer.
 - **Plain-text config.** One `config.toml` for hotkeys and auto-save. Changes apply within a second, with no restart.
-- **Light and private.** Lives in the menu bar / system tray. No network access, no telemetry. Pure Rust, about 2 MB per architecture.
+- **Light and private.** Lives in the menu bar / system tray. No network access, no telemetry. The native binary is about 2 MB per architecture.
 
 <p align="center">
   <img src="docs/images/toolbar.png" width="560" alt="Toolbar: tools, undo/redo, pin, save, cancel and confirm, with colors and sizes below">
@@ -68,9 +68,12 @@ Requires macOS 11 Big Sur or later, on Apple Silicon or Intel.
 
 ### Windows
 
-1. Download `QuickShot-<version>-windows-x64.zip` from the [latest release](../../releases/latest).
-2. Extract it anywhere and run `QuickShot.exe`. It lives in the system tray; no console window appears.
-3. If SmartScreen shows *"Windows protected your PC"*, click **More info → Run anyway** (only once).
+Choose a Windows download from the [release page](../../releases/latest).
+
+- **Installer** (`*-Setup.exe`). Browse to or enter a folder on **Choose Install Location**. The first install defaults to `%LOCALAPPDATA%\Programs\QuickShot`. Upgrades use your previous folder by default. Quit QuickShot from the tray before upgrading.
+- **Portable** (`*-windows-x64.zip`). Extract the ZIP to the folder of your choice and run `QuickShot.exe`.
+
+If SmartScreen shows *"Windows protected your PC"*, click **More info → Run anyway** (only once).
 
 Requires Windows 10 or 11 (x64).
 
@@ -86,7 +89,8 @@ Requires Windows 10 or 11 (x64).
 | Key / gesture | Action |
 |---|---|
 | Drag | Select a region |
-| Hover + click | Snap the selection to a window (macOS) |
+| Hover + click | Select the highlighted area |
+| `Alt` (Windows) | Each capture starts in window mode. Press once to snap to UI elements and again to return to whole windows |
 | `C` | Copy the color under the cursor (HEX) |
 | `Esc` | Cancel |
 
@@ -99,8 +103,10 @@ Requires Windows 10 or 11 (x64).
 | `M` `A` `R` `E` `P` `T` `B` | Move · Arrow · Rectangle · Ellipse · Pen · Text · Mosaic |
 | `1` – `4` | Red · Yellow · Green · Blue |
 | `[` / `]` | Smaller / larger stroke, text or mosaic block |
-| `⌘Z` / `⌘⇧Z` (`Ctrl` on Windows) | Undo / redo |
+| `⌘Z` / `⌘⇧Z` (macOS), or click the toolbar arrows on either platform | Undo / redo |
 | `H` | Show shortcut hints on the toolbar |
+| Drag the six-dot handle on the left | Move the toolbar |
+| Click the pin | Keep the selection on top. Hover over the pinned image and click × in its upper-right corner to close it |
 
 In the text tool, `↩` commits, `⇧↩` adds a new line and `Esc` discards. Click a committed text to edit it again.
 
@@ -119,7 +125,8 @@ Open it from the menu with **Edit Config…**. Edits are picked up within a seco
 [hotkey]
 # Modifiers joined by "+", ending with a key.
 # Modifiers: Cmd / Ctrl / Alt / Opt / Shift / Meta / Super
-# Keys: A–Z, 0–9, F1–F24, Space, Enter, Tab, Backspace, Escape
+# Keys: A–Z, 0–9, Space, Enter, Tab, Backspace, Escape, and function keys.
+# Function keys work alone, e.g. region = "F2". macOS: F1–F20. Windows: F1–F11 and F13–F24.
 region = "Cmd+Shift+A"          # Windows: "Ctrl+Shift+A"
 fullscreen = "Cmd+Shift+S"      # Windows: "Ctrl+Shift+S"
 
@@ -128,12 +135,35 @@ fullscreen = "Cmd+Shift+S"      # Windows: "Ctrl+Shift+S"
 enabled = false
 directory = "~/Desktop"         # Windows: "~/Pictures"
 # Placeholders: {date} {time} {datetime} {w} {h} {mode}
-filename_template = "Screenshot_{datetime}.png"
+filename_template = "QuickShot_{datetime}.png"
 
 [general]
-# Show a notification after a full-screen capture.
-notification_on_fullscreen = true
+fullscreen_feedback = "notification"
 ```
+
+**Auto-save on Windows.** To save screenshots to a folder on drive F, edit the existing `[save]` section:
+
+```toml
+[save]
+enabled = true
+directory = "F:\images"
+```
+
+You can paste a path from File Explorer using either single or double quotes. `~/Pictures` points to the Pictures folder under your user profile.
+
+**Save As for regions.** The toolbar’s Save button opens the last folder where you successfully used Save As, even after a restart. On first use, or if that folder is gone, the dialog starts in the configured `directory`. Cancelling keeps the previous folder. Region and full-screen captures share `filename_template`, producing names such as `QuickShot_2026-11-13_09-30-00.png` by default.
+
+**Full-screen feedback.** With auto-save on or off, the captured display flashes as soon as the capture succeeds. Set `fullscreen_feedback = "off"` to disable it. The legacy `notification_on_fullscreen = false` selects flash only, unless you explicitly set `fullscreen_feedback`.
+
+| `fullscreen_feedback` | After capture |
+|---|---|
+| `"notification"` (default) | Flash and show a notification. Clipboard-only captures and failed saves show a copy confirmation |
+| `"flash"` | Briefly flash the captured display |
+| `"off"` | Disable the flash and notification |
+
+On Windows, both editions register QuickShot in the current user’s Start menu for notifications. If Windows rejects a notification, the latest error is saved in `%LOCALAPPDATA%\QuickShot\notification-error.log`.
+
+Full-screen screenshots are saved in capture order. If a slow disk already has three frames waiting to be written, the next capture goes to the clipboard only. Notification mode reports that the PNG was not saved.
 
 | Placeholder | Example |
 |---|---|
@@ -161,9 +191,9 @@ Packaging:
 | Platform | Command | Output |
 |---|---|---|
 | macOS | `bash scripts/package.sh` | `dist/QuickShot.app` (universal) and `dist/QuickShot-<version>.dmg` |
-| Windows | `pwsh scripts/package.ps1` (Developer PowerShell) | `dist/QuickShot-<version>-windows-x64.zip` |
+| Windows | `pwsh scripts/package.ps1` (Developer PowerShell) | `dist/QuickShot-<version>-windows-x64.zip` + `*-Setup.exe` |
 
-`package.sh` accepts `BUNDLE_ID` (default `com.QuickShot.app`) and `SIGN_IDENTITY` (default `-`, ad-hoc). Windows builds need the MSVC toolchain (Visual Studio Build Tools with *Desktop development with C++*).
+`package.sh` accepts `BUNDLE_ID` (default `com.QuickShot.app`) and `SIGN_IDENTITY` (default `-`, ad-hoc). Windows builds need NSIS 3 and the MSVC toolchain (Visual Studio Build Tools with *Desktop development with C++*).
 
 Set `QUICKSHOT_DEBUG=1` to log capture and first-frame timings, or `QUICKSHOT_FRAME_DEBUG=1` to log per-frame paint and present times.
 
@@ -176,14 +206,14 @@ QUICKSHOT_README_BG=path/to/background.png QUICKSHOT_README_OUT=docs/images \
 
 ## Releasing
 
-Pushing a `v*` tag runs the [Release workflow](.github/workflows/release.yml). It tests and builds both platforms, then publishes a GitHub Release with the `.dmg` and `.zip`. Artifact names come from the version in `Cargo.toml`, so bump it first. See [RELEASING.md](RELEASING.md) for the step-by-step.
+Pushing a `v*` tag runs the [Release workflow](.github/workflows/release.yml). It tests and builds both platforms, then publishes a GitHub Release with the `.dmg`, `Setup.exe` and `.zip`. Artifact names come from the version in `Cargo.toml`, so bump it first. See [RELEASING.md](RELEASING.md) for the step-by-step.
 
 **Signing (optional).** Without extra setup the macOS build is ad-hoc signed. To sign it with your own certificate, add the repository secrets `MAC_CERT_P12_BASE64`, `MAC_CERT_PASSWORD` and `KEYCHAIN_PASSWORD`.
 
 ## How it works
 
 - **Capture.** On macOS, `CGDisplayCreateImage` grabs the display under the cursor, and one multi-threaded pass converts it into both the full-brightness frame and the dimmed overlay background. Window bounds for snapping are read in parallel with `CGWindowListCopyWindowInfo`.
-- **Rendering.** The overlay is drawn in software and handed to CoreAnimation through a double-buffered `IOSurface`, which is zero-copy. Shapes are rasterized per scanline over only the pixels they cover, so a full-screen arrow costs about as much as a small one.
+- **Rendering.** On macOS the overlay is drawn in software and handed to CoreAnimation through a double-buffered `IOSurface`, which is zero-copy. Shapes are rasterized per scanline over only the pixels they cover, so a full-screen arrow costs about as much as a small one.
 - **Text.** Editing happens in a native `NSTextView` (Windows: an `EDIT` control). Committed text is rasterized with the same system font stack, so CJK and emoji look identical on screen and in the export.
 - **Hotkeys** use `global-hotkey` and are delivered straight into the event loop without polling.
 
@@ -197,7 +227,7 @@ rm -rf /Applications/QuickShot.app
 rm -rf ~/.config/QuickShot                                                   # optional: settings
 ```
 
-**Windows:** choose **Quit** from the tray menu, then delete the folder. If Start at Login was on, also run `reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v QuickShot /f`. Settings are in `%APPDATA%\QuickShot`.
+**Windows** — Uninstall from Settings → Apps. Your config and saved screenshots are preserved. For a portable copy, disable Start at Login, quit from the tray, and delete the extracted folder.
 
 ## Contributing
 

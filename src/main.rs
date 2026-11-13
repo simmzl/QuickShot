@@ -7,11 +7,17 @@ mod clipboard;
 mod config;
 mod crop;
 mod file_save;
+mod flash;
+mod fullscreen_save;
 mod hotkey;
 mod icon_font;
 #[cfg(target_os = "macos")]
 mod macos_objc;
 mod notification;
+#[cfg(windows)]
+mod windows_mouse;
+#[cfg(windows)]
+mod windows_notification;
 mod native_text;
 mod overlay;
 mod permission;
@@ -41,6 +47,11 @@ fn main() {
 fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
+        #[cfg(windows)]
+        Some("--view") => {
+            anyhow::ensure!(args.len() == 3, "expected one notification identifier");
+            return windows_notification::view(&args[2]);
+        }
         Some("--install-autostart") => {
             return autostart::install();
         }
@@ -61,6 +72,17 @@ fn run() -> Result<()> {
 
     permission::preflight()?;
     let config = config::Config::load();
+
+    #[cfg(windows)]
+    let _notification_runtime = windows_notification::NotificationRuntime::initialize()
+        .inspect_err(|error| windows_notification::log_failure(&format!("{error:#}")))
+        .ok();
+    #[cfg(windows)]
+    if config.general.fullscreen_feedback.notifies() {
+        if let Err(error) = windows_notification::prepare() {
+            windows_notification::log_failure(&format!("{error:#}"));
+        }
+    }
 
     let event_loop = EventLoop::<app::UserEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();

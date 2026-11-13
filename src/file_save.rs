@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use image::RgbaImage;
 use std::fs;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 
@@ -37,28 +38,63 @@ pub fn save_png(
     template: &str,
     mode: CaptureMode,
 ) -> Result<PathBuf> {
-    fs::create_dir_all(directory).with_context(|| {
-        format!("create save directory {}", directory.display())
-    })?;
-    let now = OffsetDateTime::now_local().unwrap_or_else(|_| {
-        eprintln!("file_save: local time unavailable; using UTC");
-        OffsetDateTime::now_utc()
-    });
-    let warn_cell = std::cell::Cell::new(false);
-    let ctx = TemplateContext {
-        width: frame.width(),
-        height: frame.height(),
-        mode,
-        now,
-        warn_unknown: &warn_cell,
-    };
-    let filename = interpolate(template, &ctx);
-    let candidate = directory.join(&filename);
-    let target = uniquify(&candidate);
-    frame
-        .save(&target)
-        .with_context(|| format!("write PNG to {}", target.display()))?;
-    Ok(target)
+    save_png_at(frame, directory, template, mode, capture_time())
+}
+
+pub fn capture_time() -> OffsetDateTime {
+    OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc())
+}
+
+pub fn save_png_at(
+    frame: &RgbaImage,
+    directory: &Path,
+    template: &str,
+    mode: CaptureMode,
+    now: OffsetDateTime,
+) -> Result<PathBuf> {
+    fs::create_dir_all(directory)
+        .with_context(|| format!("create save directory {}", directory.display()))?;
+    let filename = screenshot_filename(template, frame.dimensions(), mode, now);
+    let candidate = directory.join(filename);
+    let mut png = tempfile::NamedTempFile::new_in(directory)?;
+    {
+        let mut writer = BufWriter::new(png.as_file_mut());
+        frame.write_to(&mut writer, image::ImageFormat::Png)?;
+        writer.flush()?;
+    }
+    persist_png(png, &candidate)
+}
+
+pub fn screenshot_filename(
+    template: &str, size: (u32, u32), mode: CaptureMode, now: OffsetDateTime,
+) -> String {
+    interpolate(template, &TemplateContext {
+        width: size.0, height: size.1, mode, now,
+        warn_unknown: &std::cell::Cell::new(false),
+    })
+}
+
+/// Read the last successful Save As directory, falling back to the configured
+/// folder. A missing configured folder can be created on first use.
+pub fn dialog_directory(state: Option<&Path>, configured: &Path) -> Option<PathBuf> {
+    if let Some(last) = state.and_then(|p| fs::read_to_string(p).ok()).map(PathBuf::from) {
+        if last.is_absolute() && last.is_dir() {
+            return Some(last);
+        }
+    }
+    fs::create_dir_all(configured).ok()?;
+    std::path::absolute(configured).ok()
+}
+
+pub fn remember_dialog_directory(state: &Path, saved_file: &Path) -> Result<()> {
+    let saved_file = std::path::absolute(saved_file)?;
+    let directory = saved_file.parent().context("missing save directory")?;
+    let state_dir = state.parent().context("missing state directory")?;
+    fs::create_dir_all(state_dir)?;
+    let mut temp = tempfile::NamedTempFile::new_in(state_dir)?;
+    temp.write_all(directory.to_str().context("directory is not UTF-8")?.as_bytes())?;
+    temp.persist(state)?;
+    Ok(())
 }
 
 pub fn interpolate(template: &str, ctx: &TemplateContext<'_>) -> String {
@@ -102,31 +138,27 @@ fn format_time(dt: OffsetDateTime) -> String {
     format!("{:02}-{:02}-{:02}", dt.hour(), dt.minute(), dt.second())
 }
 
-pub fn uniquify(candidate: &Path) -> PathBuf {
-    if !candidate.exists() {
-        return candidate.to_path_buf();
-    }
-    let parent = candidate.parent().unwrap_or_else(|| Path::new(""));
-    let stem = candidate
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let ext = candidate
-        .extension()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    for n in 1..=99 {
-        let new_name = if ext.is_empty() {
-            format!("{stem}_{n}")
-        } else {
-            format!("{stem}_{n}.{ext}")
-        };
-        let candidate = parent.join(new_name);
-        if !candidate.exists() {
-            return candidate;
+// Publish only a complete PNG. Even when captures share a template, an old
+// notification must continue to identify its original file.
+fn persist_png(mut png: tempfile::NamedTempFile, candidate: &Path) -> Result<PathBuf> {
+    let mut path = candidate.to_owned();
+    for suffix in 1u64.. {
+        match png.persist_noclobber(&path) {
+            Ok(_) => return Ok(path),
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                png = error.file;
+            }
+            Err(error) => return Err(error.error).with_context(|| format!("save {}", path.display())),
         }
+        let mut name = candidate.file_stem().unwrap_or_default().to_owned();
+        name.push(format!("_{suffix}"));
+        if let Some(ext) = candidate.extension() {
+            name.push(".");
+            name.push(ext);
+        }
+        path = candidate.with_file_name(name);
     }
-    candidate.to_path_buf()
+    anyhow::bail!("no available screenshot filename")
 }
 
 #[cfg(test)]
@@ -134,6 +166,20 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use time::macros::datetime;
+
+    #[test]
+    fn save_dialog_remembers_successful_directory_and_recovers_if_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let configured = root.path().join("configured");
+        let chosen = root.path().join("chosen");
+        let state = root.path().join("settings/last-save-directory");
+        assert_eq!(dialog_directory(Some(&state), &configured), Some(configured.clone()));
+        fs::create_dir(&chosen).unwrap();
+        remember_dialog_directory(&state, &chosen.join("shot.png")).unwrap();
+        assert_eq!(dialog_directory(Some(&state), &configured), Some(chosen.clone()));
+        fs::remove_dir(chosen).unwrap();
+        assert_eq!(dialog_directory(Some(&state), &configured), Some(configured));
+    }
 
     #[test]
     fn interpolate_date() {
@@ -224,27 +270,17 @@ mod tests {
     }
 
     #[test]
-    fn uniquify_no_collision() {
-        let dir = std::env::temp_dir().join("QuickShot_uniquify_test_noclash");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let p = dir.join("fresh.png");
-        assert_eq!(uniquify(&p), p);
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn uniquify_adds_suffix_on_collision() {
-        let dir = std::env::temp_dir().join("QuickShot_uniquify_test_clash");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let existing = dir.join("shot.png");
-        fs::write(&existing, b"x").unwrap();
-        let next = uniquify(&existing);
-        assert_eq!(next, dir.join("shot_1.png"));
-        fs::write(&next, b"x").unwrap();
-        let next2 = uniquify(&existing);
-        assert_eq!(next2, dir.join("shot_2.png"));
-        fs::remove_dir_all(&dir).ok();
+    fn notifications_keep_distinct_png_paths_after_many_collisions() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("shot.png");
+        fs::write(&original, b"original").unwrap();
+        for n in 1..=99 {
+            fs::write(dir.path().join(format!("shot_{n}.png")), b"existing").unwrap();
+        }
+        let frame = RgbaImage::new(2, 3);
+        let saved = save_png(&frame, dir.path(), "shot.png", CaptureMode::Fullscreen).unwrap();
+        assert_eq!(saved, dir.path().join("shot_100.png"));
+        assert_eq!(image::open(saved).unwrap().to_rgba8(), frame);
+        assert_eq!(fs::read(original).unwrap(), b"original");
     }
 }

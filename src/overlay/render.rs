@@ -321,6 +321,22 @@ fn estimate_text_width(text: &str, px_size: f32) -> i32 {
     (text.chars().count() as f32 * px_size * 0.6).ceil() as i32
 }
 
+#[cfg(windows)]
+pub fn draw_snap_mode(
+    buf: &mut [u32], w: u32, h: u32, font: &mut Font, scale: f32,
+    element_mode: bool, cursor: (i32, i32),
+) {
+    let label = if element_mode { "Element  |  Alt: Window" } else { "Window  |  Alt: Element" };
+    let font_px = LABEL_FONT_PX * scale;
+    let pad = (6.0 * scale).round() as i32;
+    let width = font.measure_label(label, font_px).ceil() as i32 + 2 * pad;
+    let height = font_px.ceil() as i32 + 2 * pad;
+    let bottom = h as i32 - height - pad;
+    let y = if cursor.0 < width + 2 * pad && cursor.1 >= bottom - pad { pad } else { bottom };
+    draw_rounded_rect_alpha(buf, w, h, pad, y, width, height, pad, 0, 0.78);
+    font.render_text(buf, w, h, 2 * pad, y + pad, label, font_px, 0x00ffffff);
+}
+
 /// Filled rect with alpha-blended solid color and squared corners masked into
 /// a 4-px rounded pill.
 // All args are primitives for a pixel-blending inner loop; no shared struct

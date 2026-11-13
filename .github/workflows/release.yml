@@ -136,19 +136,50 @@ jobs:
       - name: Run test suite
         run: cargo test
 
-      - name: Package .zip
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
+
+      - name: Package installer and portable ZIP
         shell: pwsh
         run: ./scripts/package.ps1
+
+      - name: Verify installation, upgrade and uninstall
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Get-Item dist/*-Setup.exe).FullName
+          $dir = "$env:RUNNER_TEMP\Custom install\QuickShot"
+          $exe = "$dir\QuickShot.exe"
+          function Run-Setup([string]$options = '/S') {
+            if ((Start-Process $setup $options -Wait -PassThru).ExitCode -ne 0) { throw 'Setup failed' }
+          }
+          Run-Setup "/S /D=$dir"
+          if ((Get-FileHash $exe).Hash -ne (Get-FileHash target/release/QuickShot.exe).Hash) { throw 'Installed payload differs' }
+          if ((Start-Process $exe '--install-autostart' -Wait -PassThru).ExitCode -ne 0) { throw 'Autostart setup failed' }
+          $configDir = New-Item -ItemType Directory -Force "$env:APPDATA\QuickShot"
+          Set-Content "$configDir/config.toml" '[hotkey]'
+          Run-Setup
+          $productKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\QuickShot'
+          if ((Get-ItemPropertyValue $productKey InstallLocation) -ne $dir) { throw 'Upgrade lost the install directory' }
+          $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          if ((Get-ItemPropertyValue $runKey QuickShot) -ne ('"' + $exe + '"')) { throw 'Autostart lost on upgrade' }
+          $uninstall = Start-Process "$dir\Uninstall.exe" "/S _?=$dir" -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0 -or (Test-Path $exe)) { throw 'Uninstall failed' }
+          if ((Get-ItemProperty $runKey).QuickShot) { throw 'Autostart entry left behind' }
+          if ((Get-Content "$configDir/config.toml") -ne '[hotkey]') { throw 'User config was modified' }
 
       - name: Inspect artifacts
         shell: pwsh
         run: Get-ChildItem dist -Recurse | Select-Object Length, FullName | Format-Table -AutoSize
 
-      - name: Upload .zip artifact
+      - name: Upload Windows packages
         uses: actions/upload-artifact@v4
         with:
-          name: windows-zip
-          path: dist/QuickShot-*-windows-x64.zip
+          name: windows-packages
+          path: |
+            dist/QuickShot-*-windows-x64.zip
+            dist/QuickShot-*-windows-x64-Setup.exe
           if-no-files-found: error
 
   # ---------------- Publish a single GitHub Release ----------------
@@ -181,8 +212,8 @@ jobs:
 
             ## Install (Windows)
 
-            1. Download `QuickShot-<VERSION>-windows-x64.zip` below.
-            2. Extract anywhere and double-click `QuickShot.exe`. The app lives in the system tray.
+            1. Run `QuickShot-<VERSION>-windows-x64-Setup.exe` to install for your account.
+            2. For portable use, extract the ZIP and run `QuickShot.exe`.
             3. SmartScreen may warn on first launch — click **More info → Run anyway**.
 
             x86_64 MSVC release, no console window.
@@ -198,6 +229,7 @@ jobs:
           files: |
             dist/QuickShot-*.dmg
             dist/QuickShot-*-windows-x64.zip
+            dist/QuickShot-*-windows-x64-Setup.exe
           draft: false
           prerelease: false
           fail_on_unmatched_files: true
