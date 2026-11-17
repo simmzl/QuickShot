@@ -120,12 +120,18 @@ impl OverlayHost {
 
     /// Move/resize the hidden window onto `geom`'s monitor.
     fn place(&mut self, geom: &MonitorGeom) {
+        // Windows: always verify. The reused window can be moved or rescaled
+        // between captures (DPI / display changes), and snap rects assume the
+        // client area exactly covers the captured monitor.
+        #[cfg(windows)]
+        place_windows_overlay(&self.window, geom);
+        #[cfg(not(windows))]
         if self.placed.as_ref() == Some(geom) {
             return;
         }
         #[cfg(target_os = "macos")]
         set_macos_window_frame(&self.window, geom);
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(not(any(target_os = "macos", windows)))]
         {
             self.window
                 .set_outer_position(winit::dpi::PhysicalPosition::new(geom.x, geom.y));
@@ -312,11 +318,26 @@ impl Overlay {
         (host, font, icon_font)
     }
 
+    /// Snap target under the cursor, in window pixels. Window/element bounds
+    /// are enumerated in captured-frame pixels, so map through frame space in
+    /// case the overlay's client area differs from the captured monitor.
     fn hover_target(&mut self) -> Option<Rect> {
         #[cfg(windows)]
-        { self.elements.target(self.cursor, &self.window_list, &self.proxy) }
+        {
+            let cursor = self.window_point_to_frame_point(self.cursor);
+            let target = self.elements.target(cursor, &self.window_list, &self.proxy);
+            target.map(|r| self.frame_rect_to_window(r))
+        }
+        // macOS bounds are already computed in window pixels.
         #[cfg(not(windows))]
         { snap::window_under_cursor(self.cursor, &self.window_list) }
+    }
+
+    #[cfg(windows)]
+    fn frame_rect_to_window(&self, r: Rect) -> Rect {
+        let size = self.window.inner_size();
+        let (fw, fh) = self.frame.dimensions();
+        snap::scale_rect(r, (fw, fh), (size.width, size.height))
     }
 
     fn initial_cursor(&self, geom: &MonitorGeom) -> (i32, i32) {
@@ -543,6 +564,18 @@ impl Overlay {
             WindowEvent::Focused(false) if self.grip_press_offset.take().is_some() => {
                 self.toolbar_hover = toolbar::ToolbarHit::None;
                 self.window.set_cursor(winit::window::CursorIcon::Default);
+                self.window.request_redraw();
+                Outcome::Continue
+            }
+            // winit would rescale the window to keep its logical size; the
+            // overlay must keep covering the captured monitor pixel-for-pixel.
+            #[cfg(windows)]
+            WindowEvent::ScaleFactorChanged { scale_factor, mut inner_size_writer } => {
+                self.scale_factor = scale_factor as f32;
+                if let Some(geom) = self.host.placed {
+                    let _ = inner_size_writer
+                        .request_inner_size(winit::dpi::PhysicalSize::new(geom.width, geom.height));
+                }
                 self.window.request_redraw();
                 Outcome::Continue
             }
@@ -1391,6 +1424,63 @@ impl Overlay {
         }
     }
 
+}
+
+/// Place the overlay so its client area exactly covers `geom` (physical px).
+///
+/// winit's `set_outer_position` / `request_inner_size` are asynchronous on
+/// Windows, and moving onto a monitor with a different DPI makes winit resize
+/// the window again to preserve its logical size. Either race leaves the
+/// client area offset or scaled relative to the captured frame, so snap
+/// outlines land off the real window. Move synchronously and verify.
+#[cfg(windows)]
+fn place_windows_overlay(window: &Window, geom: &MonitorGeom) {
+    use windows_sys::Win32::{
+        Foundation::{POINT, RECT},
+        Graphics::Gdi::ClientToScreen,
+        UI::WindowsAndMessaging::{
+            GetClientRect, GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+        },
+    };
+    let Some(hwnd) = crate::windows_mouse::hwnd(window) else {
+        return;
+    };
+    let target = (geom.x, geom.y, geom.width as i32, geom.height as i32);
+    // (client rect in screen px, outer window rect)
+    let rects = || unsafe {
+        let (mut c, mut o) = (std::mem::zeroed::<RECT>(), std::mem::zeroed::<RECT>());
+        let mut p = POINT { x: 0, y: 0 };
+        (GetClientRect(hwnd, &mut c) != 0
+            && ClientToScreen(hwnd, &mut p) != 0
+            && GetWindowRect(hwnd, &mut o) != 0)
+            .then_some(((p.x, p.y, c.right - c.left, c.bottom - c.top), o))
+    };
+    // Crossing into a monitor with another DPI makes winit resize the window
+    // from inside SetWindowPos; the next pass undoes that.
+    for _ in 0..3 {
+        let Some((client, outer)) = rects() else { return };
+        if client == target {
+            return;
+        }
+        // Keep any non-client margin (normally none for this undecorated window).
+        let (left, top) = (client.0 - outer.left, client.1 - outer.top);
+        let right = (outer.right - outer.left) - client.2 - left;
+        let bottom = (outer.bottom - outer.top) - client.3 - top;
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                target.0 - left,
+                target.1 - top,
+                target.2 + left + right,
+                target.3 + top + bottom,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+    }
+    if let Some((client, _)) = rects().filter(|(client, _)| *client != target) {
+        eprintln!("QuickShot: overlay client area {client:?} does not match monitor {target:?}");
+    }
 }
 
 fn frame_debug() -> bool {

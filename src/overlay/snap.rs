@@ -289,6 +289,20 @@ fn element_at(cursor: (i32, i32), window: Rect, elements: &[Rect]) -> Rect {
         .min_by_key(|r| i64::from(r.w) * i64::from(r.h)).copied().unwrap_or(window)
 }
 
+/// Map a rect between two pixel spaces covering the same screen area
+/// (captured frame ↔ overlay client). Identity when the sizes match.
+#[cfg(any(windows, test))]
+pub fn scale_rect(r: Rect, from: (u32, u32), to: (u32, u32)) -> Rect {
+    if from == to || from.0 == 0 || from.1 == 0 {
+        return r;
+    }
+    let map = |v: i32, a: u32, b: u32| (v as i64 * b as i64 / a as i64) as i32;
+    let (x0, y0) = (map(r.x, from.0, to.0), map(r.y, from.1, to.1));
+    let x1 = map(r.x.saturating_add(r.w), from.0, to.0);
+    let y1 = map(r.y.saturating_add(r.h), from.1, to.1);
+    Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+}
+
 /// Returns true if the cursor has moved at least 4 pixels (Manhattan
 /// distance) from the press position. Used to disambiguate "click on a
 /// window to snap" from "drag a rectangle".
@@ -302,6 +316,16 @@ mod tests {
 
     fn entry(x: i32, y: i32, w: i32, h: i32) -> WindowEntry {
         WindowEntry { bounds: Rect { x, y, w, h }, #[cfg(windows)] hwnd: 0, #[cfg(windows)] pid: 0 }
+    }
+
+    #[test]
+    fn scale_rect_maps_frame_pixels_to_window_pixels() {
+        let r = Rect { x: 388, y: 82, w: 1182, h: 816 };
+        assert_eq!(scale_rect(r, (1920, 1080), (1920, 1080)), r);
+        assert_eq!(
+            scale_rect(Rect { x: 400, y: 100, w: 800, h: 600 }, (2400, 1350), (1920, 1080)),
+            Rect { x: 320, y: 80, w: 640, h: 480 }
+        );
     }
 
     #[test]

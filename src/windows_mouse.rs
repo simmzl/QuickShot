@@ -11,7 +11,7 @@ use winit::{
     window::Window,
 };
 
-fn hwnd(window: &Window) -> Option<HWND> {
+pub(crate) fn hwnd(window: &Window) -> Option<HWND> {
     match window.window_handle().ok()?.as_raw() {
         RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as HWND),
         _ => None,
