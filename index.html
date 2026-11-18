@@ -151,7 +151,9 @@
   .lang-toggle button[aria-pressed="true"]{background:var(--surface); color:var(--ink); box-shadow:var(--shadow-sm)}
   @media (max-width:720px){ .nav-links{display:none} }
   @media (max-width:600px){
-    .nav-in{gap:14px}
+    .nav-in{gap:10px}
+    .brand{flex:none}
+    .nav-right{flex:none}
     .nav-right .btn-ghost{display:none}
     .nav-right .btn-primary{padding:0 12px; font-size:13.5px}
     .brand{font-size:16px}
@@ -178,9 +180,13 @@
   .hero-badge{
     display:inline-flex; align-items:center; gap:8px; font-size:13px; font-weight:700; color:var(--ink-2);
     border:1px solid var(--line-strong); background:var(--surface); border-radius:999px; padding:7px 14px 7px 9px;
+    max-width:100%;
   }
-  .hero-badge .dot{width:7px; height:7px; border-radius:50%; background:var(--green); box-shadow:0 0 0 4px rgba(31,157,87,.15)}
-  .hero-badge .tag{background:var(--accent); color:#fff; font-size:11px; padding:3px 8px; border-radius:999px; letter-spacing:.02em}
+  /* round halo drawn as its own circle — a box-shadow halo could render as a square on some phones */
+  .hero-badge .dot{width:7px; height:7px; flex:none; display:block; position:relative; border-radius:50%; background:var(--green)}
+  .hero-badge .dot::after{content:""; position:absolute; inset:-4px; border-radius:50%; background:rgba(52,199,89,.16); pointer-events:none}
+  .hero-badge .tag{background:var(--accent); color:#fff; font-size:11px; padding:3px 8px; border-radius:999px; letter-spacing:.02em; flex:none; white-space:nowrap}
+  .hero-badge .badge-text{white-space:nowrap}
   h1{
     margin:26px auto 0; max-width:820px; font-size:clamp(44px, 7.2vw, 76px); line-height:1.04;
     letter-spacing:-.035em; font-weight:800; text-wrap:balance;
@@ -491,6 +497,47 @@
   .foot a:hover{color:var(--ink)}
   .foot .right{margin-left:auto; display:flex; gap:18px; align-items:center; flex-wrap:wrap}
 
+  /* ---------- MOBILE REFINEMENTS ---------- */
+  .win-url{min-width:0}
+  .win-url > span{white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .code-bar .fname{white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0}
+  @media (max-width:600px){
+    .wrap{padding:0 18px}
+    section{padding-top:78px}
+    .hero{padding-top:52px}
+    .hero-badge{font-size:12px; gap:6px; padding:6px 11px 6px 7px}
+    .hero-badge .tag{font-size:10.5px; padding:3px 7px}
+    h1{font-size:clamp(37px, 10.6vw, 44px)}
+    .hero-sub{font-size:16px; line-height:1.6}
+    .hero-ctas{gap:10px}
+    .btn-lg{min-height:50px; padding:0 20px; font-size:15px}
+    .hero-keys{gap:8px; row-gap:10px; font-size:13px; max-width:340px; margin-left:auto; margin-right:auto}
+    .stat{padding:18px 6px 4px}
+    .stat span{font-size:11.5px; line-height:1.45}
+    .stage{padding:0 12px; margin-top:44px}
+    .stage-caption{padding:0 6px; line-height:1.6}
+    .anno-text{font-size:13.5px}
+    .tb-hint{white-space:normal; text-align:center; line-height:1.5; border-radius:14px; padding:6px 12px}
+    .card,.step{padding:22px}
+    .dl-card{padding:24px 22px}
+    .privacy-strip{padding:24px 22px}
+    .code pre{padding:16px 16px 20px}
+  }
+  @media (max-width:560px){
+    .keys-card{padding:8px 20px 12px}
+    .krow{flex-direction:column; align-items:flex-start; gap:8px}
+    .krow .kk{justify-content:flex-start}
+  }
+  @media (max-width:420px){
+    .nav-in{gap:8px}
+    .brand{font-size:15px; gap:8px}
+    .brand-mark{width:26px; height:26px}
+    .nav-right{gap:6px}
+    .nav-right .btn-primary{padding:0 10px; font-size:12.5px; min-height:40px}
+    .lang-toggle button{padding:0 8px; font-size:12px; min-height:30px}
+    .hero-badge{font-size:11.5px}
+  }
+
   .reveal{opacity:1}
   @keyframes riseIn{from{opacity:0; transform:translateY(16px)} to{opacity:1; transform:none}}
   .reveal.anim-in{animation:riseIn .65s ease both}
@@ -527,7 +574,7 @@
 
 <header class="hero">
   <div class="wrap hero-in">
-    <span class="hero-badge"><span class="tag" data-i18n="hero_badge_tag">开源</span><span class="dot" aria-hidden="true"></span> <span data-i18n="hero_badge">macOS &amp; Windows · 纯 Rust 构建</span></span>
+    <span class="hero-badge"><span class="tag" data-i18n="hero_badge_tag">开源</span><span class="dot" aria-hidden="true"></span><span class="badge-text" data-i18n="hero_badge">macOS &amp; Windows · 纯 Rust</span></span>
     <h1 data-i18n="hero_title">截图，快得像<br />本能<span class="accent">反应</span>。</h1>
     <p class="hero-sub" data-i18n="hero_sub">按下一个快捷键，选区、标注、复制一气呵成。QuickShot 常驻菜单栏，<strong>不到 0.2 秒</strong>就位，不联网、不追踪，安装包只有 <strong>约 2 MB</strong>。</p>
     <div class="hero-ctas">
@@ -908,7 +955,7 @@
     zh: {
       _title: "QuickShot — 快得像本能反应的截图工具 | macOS & Windows 截图标注",
       nav_flow:"工作流", nav_features:"功能", nav_keys:"快捷键", nav_config:"配置", nav_download:"免费下载",
-      hero_badge_tag:"开源", hero_badge:"macOS & Windows · 纯 Rust 构建",
+      hero_badge_tag:"开源", hero_badge:"macOS & Windows · 纯 Rust",
       hero_title:'截图，快得像<br />本能<span class="accent">反应</span>。',
       hero_sub:'按下一个快捷键，选区、标注、复制一气呵成。QuickShot 常驻菜单栏，<strong>不到 0.2 秒</strong>就位，不联网、不追踪，安装包只有 <strong>约 2 MB</strong>。',
       hero_download:"下载最新版", hero_github:"在 GitHub 查看源码", hero_region:"区域截图", hero_full:"全屏截图",
@@ -957,7 +1004,7 @@
     en: {
       _title: "QuickShot — Fast Screenshot & Annotation for macOS and Windows",
       nav_flow:"Workflow", nav_features:"Features", nav_keys:"Shortcuts", nav_config:"Config", nav_download:"Download free",
-      hero_badge_tag:"Open Source", hero_badge:"macOS & Windows · Built in pure Rust",
+      hero_badge_tag:"Open Source", hero_badge:"macOS & Windows · Pure Rust",
       hero_title:'Screenshots, as fast as<br /><span class="accent">instinct</span>.',
       hero_sub:'One hotkey — select, annotate, copy, done. QuickShot lives in your menu bar, ready in <strong>under 0.2s</strong>, offline with no tracking, and only <strong>~2 MB</strong> to install.',
       hero_download:"Download latest", hero_github:"View source on GitHub", hero_region:"Region capture", hero_full:"Fullscreen capture",
