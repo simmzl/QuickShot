@@ -10,10 +10,15 @@
 </p>
 
 <p align="center">
+  🌐 <a href="https://quickshot.simmzl.cn"><b>quickshot.simmzl.cn</b></a> · <a href="../../releases/latest">Download</a>
+</p>
+
+<p align="center">
   <b>English</b> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
 <p align="center">
+  <a href="https://quickshot.simmzl.cn"><img alt="Website" src="https://img.shields.io/badge/website-quickshot.simmzl.cn-ff6b35"></a>
   <a href="../../releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/simmzl/QuickShot?sort=semver&color=ff6b35"></a>
   <a href="../../actions/workflows/release.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/simmzl/QuickShot/release.yml?label=build"></a>
   <img alt="macOS 11+ · Windows 10+" src="https://img.shields.io/badge/platform-macOS%2011%2B%20%C2%B7%20Windows%2010%2B-black">
