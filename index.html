@@ -265,14 +265,27 @@
     position:absolute; top:-27px; left:-1.5px; background:#111112; color:#fff;
     font-size:11.5px; font-weight:500; padding:4px 8px; border-radius:5px; letter-spacing:.03em; white-space:nowrap;
   }
+  /* annotations — mirror src/overlay/annotate_render.rs at Retina 2× scale:
+     stroke 2/4/6 px → 1/2/3 CSS px, arrowhead 28 px → 14, text 24/40/64 px →
+     12/20/32, mosaic blocks 6/12/24 px → 3/6/12. Palette = annotate.rs Color. */
   .anno{position:absolute; inset:0; pointer-events:none}
   .anno svg{position:absolute; overflow:visible}
-  .anno-text{
-    position:absolute; font-weight:800; font-size:17px; letter-spacing:-.01em;
-    padding:3px 8px; border-radius:6px; line-height:1.25;
-  }
-  .anno-layer{display:none}
+  .anno-layer{display:none; --c:#FF3B30; --w:2px; --fs:20px}
   .anno-layer.on{display:block}
+  .anno-layer svg .s{fill:none; stroke:var(--c); stroke-width:var(--w); stroke-linecap:round; stroke-linejoin:round}
+  .anno-layer svg .f{fill:var(--c)}
+  /* rect: hard-edged bars centred on the edge; horizontal bars span the rect
+     width, vertical bars its height → the small outer-corner notch the app has */
+  .anno-rect{position:absolute}
+  .anno-rect::before,.anno-rect::after{content:""; position:absolute; box-sizing:border-box; border:0 solid var(--c)}
+  .anno-rect::before{left:0; right:0; top:calc(var(--w) / -2); bottom:calc(var(--w) / -2); border-top-width:var(--w); border-bottom-width:var(--w)}
+  .anno-rect::after{top:0; bottom:0; left:calc(var(--w) / -2); right:calc(var(--w) / -2); border-left-width:var(--w); border-right-width:var(--w)}
+  /* text: plain system font, regular weight, no background — as NSFont.systemFont / YaHei UI */
+  .anno-text{
+    position:absolute; color:var(--c); font-size:var(--fs); font-weight:400; line-height:1.2; white-space:nowrap;
+    font-family:-apple-system, BlinkMacSystemFont, "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  }
+  .anno-mosaic{position:absolute; display:block; image-rendering:pixelated}
 
   /* floating toolbar — faithful to the app: main bar 52pt / radius 14,
      surface #1C1C1F @94%, grip + [7 tools | undo redo | pin save | ✕ ✓],
@@ -652,40 +665,34 @@
           <span class="handle ml"></span><span class="handle mr"></span>
           <span class="handle bl"></span><span class="handle bm"></span><span class="handle br"></span>
           <div class="anno">
-            <!-- arrow: straight shaft + filled 60° triangular head, exactly as the app draws it -->
-            <div class="anno-layer" data-layer="arrow">
-              <svg style="left:34%; top:38%" width="240" height="130" viewBox="0 0 240 130"><line x1="196" y1="112" x2="47" y2="25" stroke="#FF3B30" stroke-width="4" stroke-linecap="round"/><path d="M28 8 L62 14 L40 42 Z" fill="#FF3B30"/></svg>
-              <span class="anno-text" style="left:56%; top:66%; color:#FF3B30" data-i18n="anno_arrow">看这里 ↑</span>
+            <!-- arrow: round-capped shaft that stops at the head's base + filled 60° head
+                 of fixed length (ARROWHEAD_LEN 28px = 14 CSS px), as draw_arrow_on_image -->
+            <div class="anno-layer" data-layer="arrow" data-color="0" data-size="1">
+              <svg style="left:34%; top:38%" width="220" height="120" viewBox="0 0 220 120"><line class="s" x1="200" y1="110" x2="32.24" y2="16.80"/><path class="f" d="M20 10 L36.17 9.74 L28.31 23.86 Z"/></svg>
+              <span class="anno-text" style="left:56%; top:66%" data-i18n="anno_arrow">看这里 ↑</span>
             </div>
-            <!-- rect: sharp corners, as the app draws it -->
-            <div class="anno-layer on" data-layer="rect">
-              <svg style="left:6%; top:52%" width="46%" height="38%" viewBox="0 0 300 130" preserveAspectRatio="none"><rect x="2" y="2" width="296" height="126" fill="none" stroke="#FF3B30" stroke-width="4"/></svg>
-              <span class="anno-text" style="left:58%; top:58%; color:#FF3B30" data-i18n="anno_rect">就是这块</span>
+            <!-- rect: hard-edged outline centred on the edge, as draw_rect_outline_on_image -->
+            <div class="anno-layer on" data-layer="rect" data-color="0" data-size="1">
+              <span class="anno-rect" style="left:6%; top:52%; width:46%; height:38%"></span>
+              <span class="anno-text" style="left:58%; top:58%" data-i18n="anno_rect">就是这块</span>
             </div>
-            <!-- ellipse -->
-            <div class="anno-layer" data-layer="ellipse">
-              <svg style="left:52%; top:48%" width="40%" height="42%" viewBox="0 0 260 140" preserveAspectRatio="none"><ellipse cx="130" cy="70" rx="126" ry="66" fill="none" stroke="#FFCC00" stroke-width="4"/></svg>
+            <!-- ellipse: inscribed in the drag rect, constant-width AA stroke -->
+            <div class="anno-layer" data-layer="ellipse" data-color="1" data-size="1">
+              <svg style="left:52%; top:48%" width="40%" height="42%" viewBox="0 0 100 100" preserveAspectRatio="none"><ellipse class="s" cx="50" cy="50" rx="50" ry="50" vector-effect="non-scaling-stroke"/></svg>
             </div>
-            <!-- pen -->
-            <div class="anno-layer" data-layer="pen">
-              <svg style="left:10%; top:14%" width="52%" height="34%" viewBox="0 0 340 120"><path d="M8 84 C 60 20, 110 100, 168 44 S 290 18, 332 62" fill="none" stroke="#34C759" stroke-width="4" stroke-linecap="round"/></svg>
+            <!-- pen: polyline of round-capped segments -->
+            <div class="anno-layer" data-layer="pen" data-color="2" data-size="1">
+              <svg style="left:10%; top:14%" width="52%" height="34%" viewBox="0 0 340 120" preserveAspectRatio="none"><path class="s" d="M8 84 C 60 20, 110 100, 168 44 S 290 18, 332 62" vector-effect="non-scaling-stroke"/></svg>
             </div>
-            <!-- text: plain colored text, no background — as the app renders it -->
-            <div class="anno-layer" data-layer="text">
-              <span class="anno-text" style="left:10%; top:16%; color:#FF3B30" data-i18n="anno_text1">这里改成左对齐，谢谢！</span>
-              <span class="anno-text" style="left:56%; top:60%; color:#007AFF" data-i18n="anno_text2">第二处 ✍️</span>
+            <!-- text: plain colored system-font text, no background -->
+            <div class="anno-layer" data-layer="text" data-color="0" data-size="1">
+              <span class="anno-text" style="left:10%; top:16%" data-i18n="anno_text1">这里改成左对齐，谢谢！</span>
+              <span class="anno-text" style="left:56%; top:60%; --c:#007AFF" data-i18n="anno_text2">第二处 ✍️</span>
             </div>
-            <!-- mosaic -->
-            <div class="anno-layer" data-layer="mosaic">
-              <svg style="left:8%; top:54%" width="34%" height="30%" viewBox="0 0 220 100">
-                <g>
-                  <rect width="44" height="25" fill="#B9B9BE"/><rect x="44" width="44" height="25" fill="#8E8E93"/><rect x="88" width="44" height="25" fill="#C6C6CB"/><rect x="132" width="44" height="25" fill="#9D9DA3"/><rect x="176" width="44" height="25" fill="#B0B0B5"/>
-                  <rect y="25" width="44" height="25" fill="#9D9DA3"/><rect x="44" y="25" width="44" height="25" fill="#C6C6CB"/><rect x="88" y="25" width="44" height="25" fill="#8E8E93"/><rect x="132" y="25" width="44" height="25" fill="#B9B9BE"/><rect x="176" y="25" width="44" height="25" fill="#8E8E93"/>
-                  <rect y="50" width="44" height="25" fill="#C6C6CB"/><rect x="44" y="50" width="44" height="25" fill="#9D9DA3"/><rect x="88" y="50" width="44" height="25" fill="#B0B0B5"/><rect x="132" y="50" width="44" height="25" fill="#8E8E93"/><rect x="176" y="50" width="44" height="25" fill="#B9B9BE"/>
-                  <rect y="75" width="44" height="25" fill="#8E8E93"/><rect x="44" y="75" width="44" height="25" fill="#B9B9BE"/><rect x="88" y="75" width="44" height="25" fill="#9D9DA3"/><rect x="132" y="75" width="44" height="25" fill="#C6C6CB"/><rect x="176" y="75" width="44" height="25" fill="#9D9DA3"/>
-                </g>
-              </svg>
-              <span class="anno-text" style="left:48%; top:62%; color:#5C5C60; font-size:13.5px" data-i18n="anno_mosaic">敏感信息，一键打码</span>
+            <!-- mosaic: real block-average pixelation of what's underneath (apply_mosaic_on_image) -->
+            <div class="anno-layer" data-layer="mosaic" data-color="0" data-size="2">
+              <canvas class="anno-mosaic" id="anno-mosaic" style="left:1%; top:22%; width:50%; height:40%"></canvas>
+              <span class="anno-text" style="left:54%; top:34%" data-i18n="anno_mosaic">敏感信息，一键打码</span>
             </div>
           </div>
         </div>
@@ -879,7 +886,7 @@
 <span class="ky">fullscreen</span> = <span class="st">"Cmd+Shift+S"</span>
 
 <span class="sec">[save]</span>
-<span class="cm"># 每次截图同时存一份 PNG</span>
+<span class="cm" data-i18n="cfg_save_comment"># Also save a PNG for every capture</span>
 <span class="ky">enabled</span>           = <span class="st">false</span>
 <span class="ky">directory</span>         = <span class="st">"~/Desktop"</span>
 <span class="ky">filename_template</span> = <span class="st">"QuickShot_{datetime}.png"</span>
@@ -995,6 +1002,7 @@
       k_tray:"菜单栏 / 托盘", k_tray_sub:"截区域 · 截全屏 · 改配置 · 开机自启 · 退出", k_rightclick:"右键图标",
       config_title:"一个文本文件，<br />就是全部设置", config_sub:'没有设置窗口迷宫，没有云端同步账号。所有偏好都在一个 <span class="mono" style="font-size:.92em; font-weight:600">config.toml</span> 里，改完约一秒内生效，不用重启。',
       config_f1:'<b>快捷键自由改</b> —— 组合键甚至单个功能键（如 <span class="mono" style="font-size:.9em">F2</span>）都可以。',
+      cfg_save_comment:"# 每次截图同时存一份 PNG",
       config_f2:"<b>自动保存</b> —— 每次截图顺手存一份 PNG，文件名模板支持日期、时间、尺寸等占位符。",
       config_f3:"<b>全屏反馈可调</b> —— 通知 + 闪光、仅闪光、或完全安静，随你。",
       copy_btn:"复制", copy_done:"已复制 ✓",
@@ -1044,6 +1052,7 @@
       k_tray:"Menu bar / Tray", k_tray_sub:"Region · Fullscreen · Config · Launch at login · Quit", k_rightclick:"Right-click icon",
       config_title:"One text file,<br />all your settings", config_sub:'No settings maze, no cloud account. All preferences live in one <span class="mono" style="font-size:.92em; font-weight:600">config.toml</span> — changes apply in ~1s, no restart needed.',
       config_f1:'<b>Remap any hotkey</b> — combos or even a single function key like <span class="mono" style="font-size:.9em">F2</span>.',
+      cfg_save_comment:"# Also save a PNG for every capture",
       config_f2:"<b>Auto-save</b> — Save a PNG on every capture, with filename templates for date, time, size and more.",
       config_f3:"<b>Adjustable fullscreen feedback</b> — Notification + flash, flash only, or completely silent — your choice.",
       copy_btn:"Copy", copy_done:"Copied ✓",
@@ -1128,22 +1137,97 @@
       document.querySelectorAll('.anno-layer').forEach(function(l){
         l.classList.toggle('on', l.getAttribute('data-layer') === tool);
       });
+      syncStyleBar();
+      if (tool === 'mosaic') renderMosaic();
       var hints = HINTS[currentLang];
       if (hints[tool]) hintEl.innerHTML = '<b>' + hints[tool].split(' — ')[0] + '</b>' + (hints[tool].indexOf(' — ') > -1 ? ' — ' + hints[tool].split(' — ').slice(1).join(' — ') : '');
     });
   });
-  document.querySelectorAll('.tb-dot').forEach(function(d){
+  /* ---- annotation style: mirrors annotate.rs Color / Stroke at 2× (Retina) ---- */
+  var PALETTE = ['#FF3B30', '#FFCC00', '#34C759', '#007AFF'];
+  var STROKE_W = [1, 2, 3];        // Stroke::px 2/4/6
+  var FONT_PX = [12, 20, 32];      // Stroke::font_px 24/40/64
+  var MOSAIC_BS = [3, 6, 12];      // Stroke::mosaic_block_size 6/12/24
+  var dots = document.querySelectorAll('.tb-dot');
+  var sizes = document.querySelectorAll('.tb-size-cell');
+  function activeLayer(){ return document.querySelector('.anno-layer[data-layer="' + currentTool + '"]'); }
+  function applyLayerStyle(l){
+    var c = +l.getAttribute('data-color'), s = +l.getAttribute('data-size');
+    l.style.setProperty('--c', PALETTE[c]);
+    l.style.setProperty('--w', STROKE_W[s] + 'px');
+    l.style.setProperty('--fs', FONT_PX[s] + 'px');
+  }
+  function syncStyleBar(){
+    var l = activeLayer(); if (!l) return;
+    var c = +l.getAttribute('data-color'), s = +l.getAttribute('data-size');
+    dots.forEach(function(x, i){ x.classList.toggle('sel', i === c); });
+    sizes.forEach(function(x, i){ x.classList.toggle('sel', i === s); });
+  }
+  document.querySelectorAll('.anno-layer').forEach(applyLayerStyle);
+  dots.forEach(function(d, i){
     d.addEventListener('click', function(){
-      document.querySelectorAll('.tb-dot').forEach(function(x){ x.classList.remove('sel'); });
-      d.classList.add('sel');
+      var l = activeLayer(); if (!l || currentTool === 'mosaic') return;
+      l.setAttribute('data-color', i); applyLayerStyle(l); syncStyleBar();
     });
   });
-  document.querySelectorAll('.tb-size-cell').forEach(function(d){
+  sizes.forEach(function(d, i){
     d.addEventListener('click', function(){
-      document.querySelectorAll('.tb-size-cell').forEach(function(x){ x.classList.remove('sel'); });
-      d.classList.add('sel');
+      var l = activeLayer(); if (!l) return;
+      l.setAttribute('data-size', i); applyLayerStyle(l); syncStyleBar();
+      if (currentTool === 'mosaic') renderMosaic();
     });
   });
+
+  /* mosaic: rasterize the fake page under the box, then block-average it exactly
+     like apply_mosaic_on_image (per-block mean colour, grid anchored at top-left) */
+  function renderMosaic(){
+    var cv = document.getElementById('anno-mosaic');
+    var layer = cv && cv.closest('.anno-layer');
+    if (!layer || !layer.classList.contains('on')) return;
+    var r = cv.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return;
+    var dpr = window.devicePixelRatio || 1;
+    var W = Math.round(r.width * dpr), H = Math.round(r.height * dpr);
+    cv.width = W; cv.height = H;
+    var ctx = cv.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, -r.left * dpr, -r.top * dpr);
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--surface').trim() || '#fff';
+    ctx.fillRect(r.left, r.top, r.width, r.height);
+    document.querySelectorAll('.fake-doc .fd-card, .fake-doc .fd-line, .fake-doc .fd-pill, .fake-doc .fd-avatar').forEach(function(el){
+      var e = el.getBoundingClientRect();
+      if (e.right < r.left || e.left > r.right || e.bottom < r.top || e.top > r.bottom) return;
+      var cs = getComputedStyle(el);
+      var rad = Math.min(parseFloat(cs.borderTopLeftRadius) || 0, e.height / 2, e.width / 2);
+      ctx.save();
+      ctx.globalAlpha = parseFloat(cs.opacity) || 1;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(e.left, e.top, e.width, e.height, rad); else ctx.rect(e.left, e.top, e.width, e.height);
+      ctx.fillStyle = cs.backgroundColor; ctx.fill();
+      var bw = parseFloat(cs.borderTopWidth) || 0;
+      if (bw > 0) { ctx.lineWidth = bw; ctx.strokeStyle = cs.borderTopColor; ctx.stroke(); }
+      if (el.classList.contains('fd-avatar') && el.textContent.trim()) {
+        ctx.globalAlpha = 1; ctx.font = cs.fontSize + ' ' + cs.fontFamily; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = cs.color; ctx.fillText(el.textContent.trim(), e.left + e.width / 2, e.top + e.height / 2 + 1);
+      }
+      ctx.restore();
+    });
+    var block = Math.max(1, Math.round(MOSAIC_BS[+layer.getAttribute('data-size')] * dpr));
+    var img = ctx.getImageData(0, 0, W, H), d = img.data;
+    for (var by = 0; by < H; by += block) {
+      for (var bx = 0; bx < W; bx += block) {
+        var x1 = Math.min(bx + block, W), y1 = Math.min(by + block, H), s0 = 0, s1 = 0, s2 = 0, n = 0, x, y, k;
+        for (y = by; y < y1; y++) for (x = bx; x < x1; x++) { k = (y * W + x) * 4; s0 += d[k]; s1 += d[k+1]; s2 += d[k+2]; n++; }
+        s0 = s0 / n | 0; s1 = s1 / n | 0; s2 = s2 / n | 0;
+        for (y = by; y < y1; y++) for (x = bx; x < x1; x++) { k = (y * W + x) * 4; d[k] = s0; d[k+1] = s1; d[k+2] = s2; d[k+3] = 255; }
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+  window.addEventListener('resize', renderMosaic);
+  if (window.matchMedia) {
+    var mq = window.matchMedia('(prefers-color-scheme: dark)');
+    if (mq.addEventListener) mq.addEventListener('change', renderMosaic);
+  }
 
   /* ---- copy config ---- */
   var copyBtn = document.getElementById('copy-config');
