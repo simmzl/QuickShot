@@ -145,6 +145,10 @@
   .btn-accent:hover{background:var(--accent-ink)}
   .btn-ghost{background:transparent; color:var(--ink); border-color:var(--line-strong)}
   .btn-ghost:hover{background:var(--surface-2)}
+  .btn-star{background:var(--ink); color:var(--bg); border-color:var(--ink)}
+  .btn-star:hover{opacity:.88}
+  .btn-star .star-ic{width:17px; height:17px; color:var(--yellow); transition:transform .25s ease}
+  .btn-star:hover .star-ic{transform:rotate(18deg) scale(1.15)}
   .btn svg{width:16px; height:16px; flex:none}
   .lang-toggle{display:inline-flex; background:var(--surface-2); border:1px solid var(--line); border-radius:999px; padding:3px; flex:none}
   .lang-toggle button{border:0; background:transparent; color:var(--ink-2); font-size:13px; font-weight:700; padding:0 13px; min-height:32px; border-radius:999px; cursor:pointer}
@@ -582,7 +586,10 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12m0 0 4.5-4.5M12 15 7.5 10.5M4 20h16"/></svg>
         <span data-i18n="hero_download">下载最新版</span>
       </a>
-      <a class="btn btn-ghost btn-lg" href="https://github.com/simmzl/QuickShot" target="_blank" rel="noopener" data-i18n="hero_github">在 GitHub 查看源码</a>
+      <a class="btn btn-star btn-lg" href="https://github.com/simmzl/QuickShot" target="_blank" rel="noopener" aria-label="Star QuickShot on GitHub">
+        <svg class="star-ic" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.6l2.83 5.94 6.53.83-4.79 4.5 1.22 6.45L12 17.13l-5.79 3.19 1.22-6.45-4.79-4.5 6.53-.83L12 2.6z"/></svg>
+        <span data-i18n="hero_star">去 GitHub 给我们点个 Star</span>
+      </a>
     </div>
     <div class="hero-keys">
       <span class="platform-toggle" role="group" aria-label="Platform">
@@ -958,7 +965,7 @@
       hero_badge_tag:"开源", hero_badge:"macOS & Windows · 纯 Rust",
       hero_title:'截图，快得像<br />本能<span class="accent">反应</span>。',
       hero_sub:'按下一个快捷键，选区、标注、复制一气呵成。QuickShot 常驻菜单栏，<strong>不到 0.2 秒</strong>就位，不联网、不追踪，安装包只有 <strong>约 2 MB</strong>。',
-      hero_download:"下载最新版", hero_github:"在 GitHub 查看源码", hero_region:"区域截图", hero_full:"全屏截图",
+      hero_download:"下载最新版", hero_star:"去 GitHub 给我们点个 Star", hero_github:"在 GitHub 查看源码", hero_region:"区域截图", hero_full:"全屏截图",
       stat1:"唤起速度 · 6K 屏同样跟手", stat2_num:"~2<em>MB</em>", stat2:"原生二进制体积", stat3:"网络请求 · 0 遥测", stat4_num:"2<em>平台</em>", stat4:"macOS 11+ · Windows 10+",
       win_url:"app — 正在被 QuickShot 框选的窗口", fd_resolved:"已解决",
       anno_arrow:"看这里 ↑", anno_rect:"就是这块", anno_text1:"这里改成左对齐，谢谢！", anno_text2:"第二处 ✍️", anno_mosaic:"敏感信息，一键打码",
@@ -1007,7 +1014,7 @@
       hero_badge_tag:"Open Source", hero_badge:"macOS & Windows · Pure Rust",
       hero_title:'Screenshots, as fast as<br /><span class="accent">instinct</span>.',
       hero_sub:'One hotkey — select, annotate, copy, done. QuickShot lives in your menu bar, ready in <strong>under 0.2s</strong>, offline with no tracking, and only <strong>~2 MB</strong> to install.',
-      hero_download:"Download latest", hero_github:"View source on GitHub", hero_region:"Region capture", hero_full:"Fullscreen capture",
+      hero_download:"Download latest", hero_star:"Star us on GitHub", hero_github:"View source on GitHub", hero_region:"Region capture", hero_full:"Fullscreen capture",
       stat1:"Launch speed · smooth even on 6K", stat2_num:"~2<em>MB</em>", stat2:"Native binary size", stat3:"Network requests · 0 telemetry", stat4_num:"2<em> platforms</em>", stat4:"macOS 11+ · Windows 10+",
       win_url:"app — window being captured by QuickShot", fd_resolved:"Resolved",
       anno_arrow:"Look here ↑", anno_rect:"Right here", anno_text1:"Make this left-aligned, thanks!", anno_text2:"Second spot ✍️", anno_mosaic:"Sensitive info — blur in one click",
